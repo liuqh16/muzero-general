@@ -135,6 +135,7 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
             observation.view(observation.shape[0], -1)
         )
         # Scale encoded state between [0, 1] (See appendix paper Training)
+        # TODO: layernorm
         min_encoded_state = encoded_state.min(1, keepdim=True)[0]
         max_encoded_state = encoded_state.max(1, keepdim=True)[0]
         scale_encoded_state = max_encoded_state - min_encoded_state

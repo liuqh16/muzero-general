@@ -342,7 +342,7 @@ class Reanalyse:
                 ]
 
                 observations = (
-                    torch.tensor(observations)
+                    torch.tensor(numpy.array(observations))
                     .float()
                     .to(next(self.model.parameters()).device)
                 )

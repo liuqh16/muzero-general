@@ -30,7 +30,7 @@ class MuZeroConfig:
 
 
         ### Self-Play
-        self.num_workers = 1  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.num_workers = 8  # Number of simultaneous threads/workers self-playing to feed the replay buffer
         self.selfplay_on_gpu = False
         self.max_moves = 700  # Maximum number of moves if game is not finished before
         self.num_simulations = 50  # Number of future moves self-simulated
@@ -76,7 +76,7 @@ class MuZeroConfig:
         self.results_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../results", os.path.basename(__file__)[:-3], datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S"))  # Path to store the model weights and TensorBoard logs
         self.save_model = True  # Save the checkpoint in results_path as model.checkpoint
         self.training_steps = 200000  # Total number of training steps (ie weights update according to a batch)
-        self.batch_size = 64  # Number of parts of games to train on at each training step
+        self.batch_size = 128  # Number of parts of games to train on at each training step
         self.checkpoint_interval = 10  # Number of training steps before using the model for self-playing
         self.value_loss_weight = 1  # Scale the value loss to avoid overfitting of the value function, paper recommends 0.25 (See paper appendix Reanalyze)
         self.train_on_gpu = torch.cuda.is_available()  # Train on GPU if available
@@ -181,6 +181,7 @@ class Game(AbstractGame):
         """
         self.env.render()
         input("Press enter to take a step ")
+        pass
 
     def action_to_string(self, action_number):
         """
@@ -580,9 +581,11 @@ class DeterministicLunarLander(gym.Env, EzPickle):
         if self.game_over or abs(state[0]) >= 1.0:
             done = True
             reward = -100
+            print("Failure!!!!!!!!!!!!!!!!!!!!!")
         if not self.lander.awake:
             done = True
             reward = +100
+            print("Success!!!!!!!!!!!!!!!!!!!!!")
         return np.array(state, dtype=np.float32), reward, done, {}
 
     def render(self, mode="human"):
