@@ -35,6 +35,20 @@ class MuZeroNetwork:
                 config.support_size,
                 config.downsample,
             )
+        elif config.network == "ma-fullyconnected":
+            return MAMuZeroFullyConnectedNetwork(
+                config.num_agents,
+                config.observation_shape,
+                config.stacked_observations,
+                len(config.action_space),
+                config.encoding_size,
+                config.fc_reward_layers,
+                config.fc_value_layers,
+                config.fc_policy_layers,
+                config.fc_representation_layers,
+                config.fc_dynamics_layers,
+                config.support_size,
+            )
         else:
             raise NotImplementedError(
                 'The network parameter should be "fullyconnected" or "resnet".'
@@ -193,6 +207,140 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
     def recurrent_inference(self, encoded_state, action):
         next_encoded_state, reward = self.dynamics(encoded_state, action)
         policy_logits, value = self.prediction(next_encoded_state)
+        return value, reward, policy_logits, next_encoded_state
+
+
+class MAMuZeroFullyConnectedNetwork(AbstractNetwork):
+    def __init__(
+        self,
+        num_agents,
+        observation_shape,
+        stacked_observations,
+        action_space_size,
+        encoding_size,
+        fc_reward_layers,
+        fc_value_layers,
+        fc_policy_layers,
+        fc_representation_layers,
+        fc_dynamics_layers,
+        support_size,
+    ):
+        super().__init__()
+        self.num_agents = num_agents
+        self.action_space_size = action_space_size
+        self.full_support_size = 2 * support_size + 1
+
+        assert len(observation_shape) == 3, \
+            "Dimensions of the game observation must be 3D (channel, height, width)"
+        C, H, W = observation_shape
+        representation_input_size = (
+            C * H * W                           # current obs
+            + stacked_observations * C * H * W  # previous obss
+            + stacked_observations * self.num_agents * H * W    # previous actions (project to obs plane)
+        )
+
+        self.representation_network = torch.nn.DataParallel(
+            mlp(
+                representation_input_size,
+                fc_representation_layers,
+                encoding_size,
+            )
+        )
+
+        self.dynamics_encoded_state_network = torch.nn.DataParallel(
+            mlp(
+                encoding_size + self.action_space_size * self.num_agents,
+                fc_dynamics_layers,
+                encoding_size,
+            )
+        )
+        self.dynamics_reward_network = torch.nn.DataParallel(
+            mlp(encoding_size, fc_reward_layers, self.full_support_size)
+        )
+
+        self.prediction_policy_networks = [None] * self.num_agents
+        for index in range(self.num_agents):
+            self.prediction_policy_networks[index] = torch.nn.DataParallel(
+                mlp(encoding_size, fc_policy_layers, self.action_space_size)
+            )
+        self.prediction_value_network = torch.nn.DataParallel(
+            mlp(encoding_size, fc_value_layers, self.full_support_size)
+        )
+
+    def prediction(self, encoded_state):
+        # Output size: (Num_samples, Num_agents, Ndims)
+        policy_logits = []
+        for index in range(self.num_agents):
+            policy_logits.append(self.prediction_policy_networks[index](encoded_state).unsqueeze(1))
+        policy_logits = torch.cat(policy_logits, dim=1)
+        value = self.prediction_value_network(encoded_state)
+        return policy_logits, value
+
+    def representation(self, observation):
+        encoded_state = self.representation_network(
+            observation.view(observation.shape[0], -1)
+        )
+        # Scale encoded state between [0, 1] (See appendix paper Training)
+        # TODO: layernorm
+        min_encoded_state = encoded_state.min(1, keepdim=True)[0]
+        max_encoded_state = encoded_state.max(1, keepdim=True)[0]
+        scale_encoded_state = max_encoded_state - min_encoded_state
+        scale_encoded_state[scale_encoded_state < 1e-5] += 1e-5
+        encoded_state_normalized = (
+            encoded_state - min_encoded_state
+        ) / scale_encoded_state
+        return encoded_state_normalized
+
+    def dynamics(self, encoded_state, action):
+        # Stack encoded_state with a game specific one hot encoded action (See paper appendix Network Architecture)
+        action_one_hot = (
+            torch.zeros((action.shape[0], self.num_agents, self.action_space_size))
+            .to(action.device)
+            .float()
+        )
+        for index in range(self.num_agents):
+            action_one_hot[:, index].scatter_(1, action[:, [index]].long(), 1.0)
+        action_one_hot = action_one_hot.reshape(action.shape[0], -1)
+        x = torch.cat((encoded_state, action_one_hot), dim=1)
+
+        next_encoded_state = self.dynamics_encoded_state_network(x)
+
+        reward = self.dynamics_reward_network(next_encoded_state)
+
+        # Scale encoded state between [0, 1] (See paper appendix Training)
+        min_next_encoded_state = next_encoded_state.min(1, keepdim=True)[0]
+        max_next_encoded_state = next_encoded_state.max(1, keepdim=True)[0]
+        scale_next_encoded_state = max_next_encoded_state - min_next_encoded_state
+        scale_next_encoded_state[scale_next_encoded_state < 1e-5] += 1e-5
+        next_encoded_state_normalized = (
+            next_encoded_state - min_next_encoded_state
+        ) / scale_next_encoded_state
+
+        return next_encoded_state_normalized, reward
+
+    def initial_inference(self, observation):
+        encoded_state = self.representation(observation)
+        policy_logits, value = self.prediction(encoded_state)
+        # reward equal to 0 for consistency
+        reward = torch.log(
+            (
+                torch.zeros(1, self.full_support_size)
+                .scatter(1, torch.tensor([[self.full_support_size // 2]]).long(), 1.0)
+                .repeat(len(observation), 1)
+                .to(observation.device)
+            )
+        )
+
+        return (
+            value,
+            reward,
+            policy_logits,
+            encoded_state,
+        )
+
+    def recurrent_inference(self, encoded_state, action):
+        next_encoded_state, reward = self.dynamics(encoded_state, action)
+        policy_logits, value = self.prediction(encoded_state)
         return value, reward, policy_logits, next_encoded_state
 
 

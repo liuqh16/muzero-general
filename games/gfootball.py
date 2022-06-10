@@ -25,9 +25,10 @@ class MuZeroConfig:
 
 
         ### Game
-        self.observation_shape = (1, 1, 10)  # Dimensions of the game observation, must be 3D (channel, height, width). For a 1D array, please reshape it to (1, 1, length of array)
+        self.num_agents = 2
+        self.observation_shape = (1, 1, 25)  # Dimensions of the game observation, must be 3D (channel, height, width). For a 1D array, please reshape it to (1, 1, length of array)
         self.action_space = list(range(19))  # Fixed list of all possible actions. You should only edit the length
-        self.players = list(range(1))  # List of players. You should only edit the length
+        self.players = list(range(2))  # List of players. You should only edit the length
         self.stacked_observations = 8  # Number of previous observations and previous actions to add to the current observation
 
         # Evaluate
@@ -37,9 +38,9 @@ class MuZeroConfig:
 
 
         ### Self-Play
-        self.num_workers = 40  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.num_workers = 1  # Number of simultaneous threads/workers self-playing to feed the replay buffer
         self.selfplay_on_gpu = False
-        self.max_moves = 1000  # Maximum number of moves if game is not finished before
+        self.max_moves = 2000  # Maximum number of moves if game is not finished before
         self.num_simulations = 50  # Number of future moves self-simulated
         self.discount = 0.997  # Chronological discount of the reward
         self.temperature_threshold = None  # Number of moves before dropping the temperature given by visit_softmax_temperature_fn to 0 (ie selecting the best action). If None, visit_softmax_temperature_fn is used every time
@@ -55,23 +56,11 @@ class MuZeroConfig:
 
 
         ### Network
-        # TODO: 对于vector类型的obs，这里需要选择fullyconnected作为模型（可参考lunarlander.py的MuzeroConfig）
-        self.network = "fullyconnected"  # "resnet" / "fullyconnected"
-        self.support_size = 300  # Value and reward are scaled (with almost sqrt) and encoded on a vector with a range of -support_size to support_size. Choose it so that support_size <= sqrt(max(abs(discounted reward)))
-
-        # Residual Network
-        self.downsample = "resnet"  # Downsample observations before representation network, False / "CNN" (lighter) / "resnet" (See paper appendix Network Architecture)
-        self.blocks = 6  # Number of blocks in the ResNet
-        self.channels = 64  # Number of channels in the ResNet
-        self.reduced_channels_reward = 64  # Number of channels in reward head
-        self.reduced_channels_value = 64  # Number of channels in value head
-        self.reduced_channels_policy = 64  # Number of channels in policy head
-        self.resnet_fc_reward_layers = [64, 64]  # Define the hidden layers in the reward head of the dynamic network
-        self.resnet_fc_value_layers = [64, 64]  # Define the hidden layers in the value head of the prediction network
-        self.resnet_fc_policy_layers = [64, 64]  # Define the hidden layers in the policy head of the prediction network
+        self.network = "ma-fullyconnected"  # "resnet" / "fullyconnected"
+        self.support_size = 10  # Value and reward are scaled (with almost sqrt) and encoded on a vector with a range of -support_size to support_size. Choose it so that support_size <= sqrt(max(abs(discounted reward)))
 
         # Fully Connected Network
-        self.encoding_size = 10
+        self.encoding_size = 20
         self.fc_representation_layers = [16, 16]  # Define the hidden layers in the representation network
         self.fc_dynamics_layers = [16]  # Define the hidden layers in the dynamics network
         self.fc_reward_layers = [16]  # Define the hidden layers in the reward network
@@ -83,14 +72,14 @@ class MuZeroConfig:
         ### Training
         self.results_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../results", os.path.basename(__file__)[:-3], datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S"))  # Path to store the model weights and TensorBoard logs
         self.save_model = True  # Save the checkpoint in results_path as model.checkpoint
-        self.training_steps = int(1000e2)  # Total number of training steps (ie weights update according to a batch)
+        self.training_steps = int(1000e3)  # Total number of training steps (ie weights update according to a batch)
         self.batch_size = 4096  # Number of parts of games to train on at each training step
-        self.checkpoint_interval = int(500)  # Number of training steps before using the model for self-playing
+        self.checkpoint_interval = int(1e3)  # Number of training steps before using the model for self-playing
         self.value_loss_weight = 0.25  # Scale the value loss to avoid overfitting of the value function, paper recommends 0.25 (See paper appendix Reanalyze)
         self.train_on_gpu = torch.cuda.is_available()  # Train on GPU if available
         # print("GPU use:", torch.cuda.is_available())
 
-        self.optimizer = "SGD"  # "Adam" or "SGD". Paper uses SGD
+        self.optimizer = "Adam"  # "Adam" or "SGD". Paper uses SGD
         self.weight_decay = 1e-4  # L2 weights regularization
         self.momentum = 0.9  # Used only if optimizer is SGD
 
@@ -142,90 +131,157 @@ class Game(AbstractGame):
     """
 
     def __init__(self, seed=None):
-        self.env = football_env.create_environment(env_name="academy_empty_goal_close",
-                                                   stacked=False,
-                                                   representation='extracted',
-                                                   logdir='/tmp/football',
-                                                   write_goal_dumps=False,
-                                                   write_full_episode_dumps=False,
-                                                   render=False)
+        self.env = GFootball()
         if seed is not None:
             self.env.seed(seed)
 
     def step(self, action):
         """
-        Apply action to the game.
-        
         Args:
             action : action of the action_space to take.
 
         Returns:
             The new observation, the reward and a boolean if the game has ended.
         """
-        observation, reward, done, _ = self.env.step(action)
-        observation = observation.transpose(2, 0, 1)
-        # TODO: 这里的observation的格式为(4, 72, 96)的numpy数组，即为4通道的2D图像
-        # 需要将每个通道内的信息提取出来拼接为一个向量: vec_obs = (足球x, 足球y, 左边球员1_x, 左边球员1_y, ...)
-        # 例如：足球的位置(x,y) = np.where(observation[:,:,2] == 255)
-        observation = self.extract_observation_position(observation)
-        # if done:
-        #     print("debug", reward)
-        return observation, reward, done
+        observation, reward, done = self.env.step(action)
+        return observation, reward * 20, done
+
+    def to_play(self):
+        """
+        Return the current player.
+
+        Returns:
+            The current player, it should be an element of the players list in the config. 
+        """
+        return self.env.to_play()
 
     def legal_actions(self):
         """
         Should return the legal actions at each turn, if it is not available, it can return
         the whole action space. At each turn, the game have to be able to handle one of returned actions.
-        
+
         For complex game where calculating legal moves is too long, the idea is to define the legal actions
-        equal to the action space but to return a negative reward if the action is illegal.        
+        equal to the action space but to return a negative reward if the action is illegal.
 
         Returns:
             An array of integers, subset of the action space.
         """
-        return list(range(19))
+        return self.env.legal_actions()
 
     def reset(self):
         """
         Reset the game for a new game.
-        
+
         Returns:
             Initial observation of the game.
         """
-        observation = self.env.reset()
-        observation = observation.transpose(2, 0, 1)
-        # TODO: 同上，需要修改observation的格式为vec
-        observation = self.extract_observation_position(observation)
-        return observation
-
-    def close(self):
-        """
-        Properly close the game.
-        """
-        self.env.close()
+        return self.env.reset()
 
     def render(self):
         """
         Display the game observation.
         """
-        self.env.render()
+        self.env._env.render()
         input("Press enter to take a step ")
 
-    def extract_observation_position(self, observation):
-        # 1st plane: 255s represent positions of players on the left team
-        # 2nd plane: 255s represent positions of players on the right team
-        # 3rd plane: 255s represent position of a ball
-        # 4th plane: 255s represent position of an active player
-        vec_obs = []
-        valid_position = np.where(observation == 255)
-        extract_idx = [2, 0, 1, 3] # vec_obs = (足球x, 足球y, 左边球员1_x, 左边球员1_y, ...)
-        for idx in extract_idx:
-            tmp_idx_array = np.where(valid_position[0] == idx)[0]
-            for tmp_idx in tmp_idx_array:
-                vec_obs.append(valid_position[1][tmp_idx])
-                vec_obs.append(valid_position[2][tmp_idx])
-            if idx == 0 and len(vec_obs) < 6: # bug 进球左队队员少一组x, y
-                vec_obs.extend([0]*(6-len(vec_obs)))
-        vec_obs = np.array(vec_obs, dtype=int)
-        vec_obs = vec_obs.reshape((1,1,10)) # muzero obs_space must be 3D
-        return vec_obs
+    def close(self):
+        """
+        Properly close the game.
+        """
+        self.env._env.close()
+
+
+class GFootball:
+    def __init__(self):
+        self._env = football_env.create_environment(env_name="2_vs_2",
+                                                    stacked=False,
+                                                    representation='raw',
+                                                    write_goal_dumps=False,
+                                                    write_full_episode_dumps=False,
+                                                    number_of_left_players_agent_controls=2,
+                                                    number_of_right_players_agent_controls=2,
+                                                    render=False)
+        self.player = 1     # 1 -> left team; -1 -> right team
+        self.N = 2          # N: num_agents in a team
+        self.observation_size = 8 * self.N + 9  # 25
+        self.state = None
+        self.action = np.zeros(self.N * 2, dtype=np.int8)
+        self.reward = np.zeros(self.N * 2)
+        self.done = False
+
+    def to_play(self):
+        return 0 if self.player == 1 else 1
+
+    def reset(self):
+        self.state = self._env.reset()
+        self.player = 1
+        return self.get_observation()
+
+    def step(self, action):
+        if self.player == 1:
+            self.action[:self.N] = np.array(action).astype(np.int8)
+        else:
+            self.action[self.N:] = np.array(action).astype(np.int8)
+            if not self.done:
+                self.state, self.reward, self.done, _ = self._env.step(self.action)
+
+        done = self.done and (
+            np.all(self.reward == 0)    # no score
+            or self.have_winner()       # have score
+        )
+
+        reward = 1 if self.have_winner() else 0
+
+        self.player *= -1
+
+        return self.get_observation(), reward, done
+
+    def get_observation(self):
+        """
+        Use raw data to generate observation: same for all players
+        """
+        if self.player == 1:
+            global_state = self.state[0]  # use player[0]'s raw observation as global state
+        else:
+            global_state = self.state[self.N]  # use player[N]'s raw observation as global state
+        observation = np.zeros(self.observation_size)
+        offset = 0
+        # 2N: (x,y) coordinates of left team players
+        observation[offset:offset + 2 * self.N] = global_state['left_team'].reshape(-1, )
+        offset += 2 * self.N
+        # 2N: (x,y) direction of left team players
+        observation[offset:offset + 2 * self.N] = global_state['left_team_direction'].reshape(-1, )
+        offset += 2 * self.N
+        # 2N: (x,y) coordinates of right team players
+        observation[offset:offset + 2 * self.N] = global_state['right_team'].reshape(-1, )
+        offset += 2 * self.N
+        # 2N: (x,y) direction of right team players
+        observation[offset:offset + 2 * self.N] = global_state['right_team_direction'].reshape(-1, )
+        offset += 2 * self.N
+        # 3: (x, y, z) position of ball
+        observation[offset:offset + 3] = global_state['ball'].reshape(-1, )
+        offset += 3
+        # 3: (x, y, z) direction of ball
+        observation[offset:offset + 3] = global_state['ball_direction'].reshape(-1, )
+        offset += 3
+        # 3: one hot encoding of ball ownership (noone, left, right)
+        observation[offset:offset + 3] = np.eye(3)[(global_state['ball_owned_team'] + 1)]
+        offset += 3
+
+        observation = np.expand_dims(observation, axis=(0, 1))
+        return observation
+
+    def legal_actions(self):
+        return list(range(19))
+
+    def have_winner(self):
+        if (
+            self.state[0]['score'][0] == 1 and self.player == 1         # left team score
+            or self.state[0]['score'][1] == 1 and self.player == -1     # right team score
+        ):
+            return True
+        else:
+            return False
+
+    def seed(self, seed):
+        self._env.seed(seed)

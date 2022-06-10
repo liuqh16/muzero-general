@@ -16,7 +16,7 @@ class ReplayBuffer:
 
     def __init__(self, initial_checkpoint, initial_buffer, config):
         self.config = config
-        self.buffer = copy.deepcopy(initial_buffer)
+        self.buffer = copy.deepcopy(initial_buffer)     # dict(int, GameHistory)
         self.num_played_games = initial_checkpoint["num_played_games"]
         self.num_played_steps = initial_checkpoint["num_played_steps"]
         self.total_samples = sum(
@@ -241,7 +241,7 @@ class ReplayBuffer:
             value = 0
 
         for i, reward in enumerate(
-            game_history.reward_history[index + 1 : bootstrap_index + 1]
+            game_history.reward_history[index + 1: bootstrap_index + 1]
         ):
             # The value is oriented from the perspective of the current player
             value += (
