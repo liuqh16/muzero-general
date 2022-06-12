@@ -16,6 +16,7 @@ class ReplayBuffer:
 
     def __init__(self, initial_checkpoint, initial_buffer, config):
         self.config = config
+        self.num_agents = getattr(self.config, "num_agents", 1)
         self.buffer = copy.deepcopy(initial_buffer)     # dict(int, GameHistory)
         self.num_played_games = initial_checkpoint["num_played_games"]
         self.num_played_steps = initial_checkpoint["num_played_steps"]
@@ -76,13 +77,14 @@ class ReplayBuffer:
             value_batch,
             policy_batch,
             gradient_scale_batch,
-        ) = ([], [], [], [], [], [], [])
+        ) = ([], [], [], [], [], [], [], [])
+        updater_batch = [] if self.num_agents > 1 else None
         weight_batch = [] if self.config.PER else None
 
         for game_id, game_history, game_prob in self.sample_n_games(self.config.batch_size):
             game_pos, pos_prob = self.sample_position(game_history)
 
-            values, rewards, policies, actions = self.make_target(
+            values, rewards, policies, actions, updaters = self.make_target(
                 game_history, game_pos
             )
 
@@ -93,6 +95,8 @@ class ReplayBuffer:
                 )
             )
             action_batch.append(actions)
+            if self.num_agents > 1:
+                updater_batch.append(updaters)
             value_batch.append(values)
             reward_batch.append(rewards)
             policy_batch.append(policies)
@@ -109,12 +113,11 @@ class ReplayBuffer:
                 weight_batch.append(1 / (self.total_samples * game_prob * pos_prob))
 
         if self.config.PER:
-            weight_batch = numpy.array(weight_batch, dtype="float32") / max(
-                weight_batch
-            )
+            weight_batch = numpy.array(weight_batch, dtype="float32") / max(weight_batch)
 
         # observation_batch: batch, channels, height, width
-        # action_batch: batch, num_unroll_steps+1
+        # action_batch: batch, num_unroll_steps+1, num_agents
+        # updater_batch: batch, num_unroll_steps+1
         # value_batch: batch, num_unroll_steps+1
         # reward_batch: batch, num_unroll_steps+1
         # policy_batch: batch, num_unroll_steps+1, len(action_space)
@@ -125,6 +128,7 @@ class ReplayBuffer:
             (
                 observation_batch,
                 action_batch,
+                updater_batch,
                 value_batch,
                 reward_batch,
                 policy_batch,
@@ -257,17 +261,23 @@ class ReplayBuffer:
         """
         Generate targets for every unroll steps.
         """
-        target_values, target_rewards, target_policies, actions = [], [], [], []
+        target_values, target_rewards, target_policies, actions, updater_idxs = [], [], [], [], []
         for current_index in range(
             state_index, state_index + self.config.num_unroll_steps + 1
         ):
-            value = self.compute_target_value(game_history, current_index)
+            from self_play import GameHistory
+            assert isinstance(game_history, GameHistory)
 
             if current_index < len(game_history.root_values):
-                target_values.append(value)
-                target_rewards.append(game_history.reward_history[current_index])
-                target_policies.append(game_history.child_visits[current_index])
-                actions.append(game_history.action_history[current_index])
+                value = self.compute_target_value(game_history, current_index)
+                target_values.append(value)     # (K+1,) where K=self.config.num_unroll_steps
+                target_rewards.append(game_history.reward_history[current_index])   # (K+1,)
+                target_policies.append(game_history.child_visits[current_index])    # (K+1, action_space_size)
+                actions.append(game_history.action_history[current_index])          # (K+1, num_agents)
+                updater_idxs.append(
+                    game_history.updater_idx[game_history.to_play_history[current_index]]  # (K+1,)
+                    if game_history.updater_idx is not None else None
+                )
             elif current_index == len(game_history.root_values):
                 target_values.append(0)
                 target_rewards.append(game_history.reward_history[current_index])
@@ -279,6 +289,10 @@ class ReplayBuffer:
                     ]
                 )
                 actions.append(game_history.action_history[current_index])
+                updater_idxs.append(
+                    game_history.updater_idx[game_history.to_play_history[current_index]]
+                    if game_history.updater_idx is not None else None
+                )
             else:
                 # States past the end of games are treated as absorbing states
                 target_values.append(0)
@@ -290,9 +304,14 @@ class ReplayBuffer:
                         for _ in range(len(game_history.child_visits[0]))
                     ]
                 )
-                actions.append(numpy.random.choice(self.config.action_space))
+                actions.append(numpy.random.choice(self.config.action_space, self.num_agents).tolist())
+                # Uniform choose updater
+                updater_idxs.append(
+                    numpy.random.choice(self.num_agents)
+                    if game_history.updater_idx is not None else None
+                )
 
-        return target_values, target_rewards, target_policies, actions
+        return target_values, target_rewards, target_policies, actions, updater_idxs
 
 
 @ray.remote

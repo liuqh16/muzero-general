@@ -1,6 +1,6 @@
 import math
 import time
-from typing import Dict
+import typing
 
 import numpy
 import ray
@@ -117,13 +117,12 @@ class SelfPlay:
         """
         game_history = GameHistory(num_agents=self.num_agents)
         observation = self.game.reset()
-        init_action = 0 if self.num_agents == 1 else [0] * self.num_agents
-        game_history.action_history.append(init_action)
+        game_history.action_history.append([0] * self.num_agents)
         game_history.observation_history.append(observation)
         game_history.reward_history.append(0)
         game_history.to_play_history.append(self.game.to_play())
         if self.num_agents > 1:
-            game_history.policy_chosen_idx = numpy.random.choice(self.num_agents, 2)
+            game_history.updater_idx = numpy.random.choice(self.num_agents, 2)
 
         done = False
 
@@ -153,7 +152,7 @@ class SelfPlay:
                         self.game.legal_actions(),
                         self.game.to_play(),
                         True,
-                        policy_chosen_idx=game_history.policy_chosen_idx
+                        updater_idx=game_history.updater_idx
                     )
                     action = self.select_action(
                         root,
@@ -183,7 +182,7 @@ class SelfPlay:
                 game_history.store_search_statistics(root, self.config.action_space)
 
                 # Next batch
-                game_history.action_history.append(action)
+                game_history.action_history.append([action] if self.num_agents == 1 else action)
                 game_history.observation_history.append(observation)
                 game_history.reward_history.append(reward)
                 game_history.to_play_history.append(self.game.to_play())
@@ -228,7 +227,7 @@ class SelfPlay:
             )
 
     @staticmethod
-    def select_action(node, temperature, num_agents=1):
+    def select_action(node, temperature, num_agents=1) -> typing.Union[int, typing.List[int]]:
         """
         Select action according to the visit count distribution and the temperature.
         The temperature is changed dynamically with the visit_softmax_temperature function
@@ -255,7 +254,7 @@ class SelfPlay:
         if num_agents > 1:
             action = [
                 (
-                    action if agent_idx == node.policy_chosen_idx
+                    action if agent_idx == node.updater_idx
                     else numpy.random.choice(actions, 1, p=node.all_policy_probs[agent_idx]).item()
                 ) for agent_idx in range(num_agents)
             ]
@@ -283,7 +282,7 @@ class MCTS:
         to_play,
         add_exploration_noise,
         override_root_with=None,
-        policy_chosen_idx=None
+        updater_idx=None
     ):
         """
         At the root of the search tree we use the representation function to obtain a
@@ -326,7 +325,7 @@ class MCTS:
                 reward,
                 policy_logits,
                 hidden_state,
-                policy_chosen_idx=policy_chosen_idx
+                updater_idx=updater_idx
             )
 
         if add_exploration_noise:
@@ -360,10 +359,10 @@ class MCTS:
             parent = search_path[-2]  # parent of the leaf node
 
             # [MA-action] random choose an action for non-chosen agent
-            if parent.policy_chosen_idx is not None:
+            if parent.updater_idx is not None:
                 action = [[
                     (
-                        action if agent_idx == parent.policy_chosen_idx
+                        action if agent_idx == parent.updater_idx
                         else numpy.random.choice(legal_actions, 1, p=parent.all_policy_probs[agent_idx]).item()
                     ) for agent_idx in range(self.config.num_agents)
                 ]]
@@ -383,7 +382,7 @@ class MCTS:
                 reward,
                 policy_logits,
                 hidden_state,
-                policy_chosen_idx=policy_chosen_idx
+                updater_idx=updater_idx
             )
 
             self.backpropagate(search_path, value, virtual_to_play, min_max_stats)
@@ -473,9 +472,9 @@ class Node:
         self.to_play = -1
         self.prior = prior  # type: float
         self.value_sum = 0
-        self.children = {}  # type: Dict[int, Node]
+        self.children = {}  # type: typing.Dict[int, Node]
         self.hidden_state = None        # type: torch.Tensor
-        self.policy_chosen_idx = None   # type: int
+        self.updater_idx = None         # type: int
         self.all_policy_probs = None    # type: numpy.ndarray
         self.reward = 0
 
@@ -487,7 +486,7 @@ class Node:
             return 0
         return self.value_sum / self.visit_count
 
-    def expand(self, actions, to_play, reward, policy_logits, hidden_state, policy_chosen_idx=None):
+    def expand(self, actions, to_play, reward, policy_logits, hidden_state, updater_idx=None):
         """
         We expand a node using the value, reward and policy prediction obtained from the
         neural network.
@@ -495,11 +494,11 @@ class Node:
         self.to_play = to_play
         self.reward = reward
         self.hidden_state = hidden_state
-        if policy_chosen_idx is not None:
-            self.policy_chosen_idx = policy_chosen_idx[to_play]
+        if updater_idx is not None:
+            self.updater_idx = updater_idx[to_play]
             self.all_policy_probs = torch.softmax(policy_logits[0], dim=1).tolist()
             self.all_policy_probs /= numpy.sum(self.all_policy_probs, axis=1, keepdims=True)
-            policy_logits = policy_logits[:, self.policy_chosen_idx]
+            policy_logits = policy_logits[:, self.updater_idx]
 
         policy_values = torch.softmax(
             torch.tensor([policy_logits[0][a] for a in actions]), dim=0
@@ -530,13 +529,13 @@ class GameHistory:
 
         where `a_t(P_t)` means player `P_t` choose to act `a_t`
 
-    observation_history[index] -> root_values[index] -> priorities[index] 
-    -> reward_history[index + 1] -> to_play_history[index]
+    observation_history[index] -> root_values[index] -> priorities[index]
+    -> action_history[index + 1] -> reward_history[index + 1] -> to_play_history[index]
     """
 
     def __init__(self, num_agents=1):
         self.num_agents = num_agents
-        self.policy_chosen_idx = None
+        self.updater_idx = None
         """agent's index of chosen policy for each side. shape=(2,)"""
 
         self.observation_history = []
@@ -552,10 +551,10 @@ class GameHistory:
         """`(P_1, P_2, ..., P_{T+1})`, size=T+1, where `P_t` means player to act before step `t`"""
 
         self.child_visits = []      # sum to 1.0 for each element
-        """saves MCTS policy for each state from `o_1` to `o_T`"""
+        """`(pi_1, pi_2, ..., pi_T)` MCTS policy for each state from `o_1` to `o_T`, size=T"""
 
         self.root_values = []
-        """`(v_1, v_2, ..., v_T)`, MCTS predicte value for `o_1` to `o_T`"""
+        """`(v_1, v_2, ..., v_T)`, MCTS predicte value for `o_1` to `o_T`, size=T"""
 
         self.reanalysed_predicted_root_values = None
         # For PER

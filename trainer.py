@@ -129,6 +129,7 @@ class Trainer:
         (
             observation_batch,
             action_batch,
+            updater_batch,
             target_value,
             target_reward,
             target_policy,
@@ -144,13 +145,16 @@ class Trainer:
         if self.config.PER:
             weight_batch = torch.tensor(weight_batch.copy()).float().to(device)
         observation_batch = torch.tensor(numpy.array(observation_batch)).float().to(device)
-        action_batch = torch.tensor(action_batch).long().to(device).unsqueeze(-1)
+        action_batch = torch.tensor(action_batch).long().to(device)
+        if updater_batch is not None:
+            updater_batch = torch.tensor(updater_batch).long().to(device)
         target_value = torch.tensor(target_value).float().to(device)
         target_reward = torch.tensor(target_reward).float().to(device)
         target_policy = torch.tensor(target_policy).float().to(device)
         gradient_scale_batch = torch.tensor(gradient_scale_batch).float().to(device)
         # observation_batch: batch, channels, height, width
-        # action_batch: batch, num_unroll_steps+1, 1 (unsqueeze)
+        # action_batch: batch, num_unroll_steps+1, num_agents
+        # updater_batch: batch, num_unroll_steps+1
         # target_value: batch, num_unroll_steps+1
         # target_reward: batch, num_unroll_steps+1
         # target_policy: batch, num_unroll_steps+1, len(action_space)
@@ -167,6 +171,8 @@ class Trainer:
         value, reward, policy_logits, hidden_state = self.model.initial_inference(
             observation_batch
         )
+        if updater_batch is not None:
+            policy_logits = policy_logits[range(policy_logits.shape[0]), updater_batch[:, 0]]
         predictions = [(value, reward, policy_logits)]
         for i in range(1, action_batch.shape[1]):
             value, reward, policy_logits, hidden_state = self.model.recurrent_inference(
@@ -174,8 +180,10 @@ class Trainer:
             )
             # Scale the gradient at the start of the dynamics function (See paper appendix Training)
             hidden_state.register_hook(lambda grad: grad * 0.5)
+            if updater_batch is not None:
+                policy_logits = policy_logits[range(policy_logits.shape[0]), updater_batch[:, i]]
             predictions.append((value, reward, policy_logits))
-        # predictions: num_unroll_steps+1, 3, batch, 2*support_size+1 | 2*support_size+1 | 9 (according to the 2nd dim)
+        # predictions: num_unroll_steps+1, 3, batch, 2*support_size+1 | 2*support_size+1 | len(action_space) (according to the 2nd dim)
 
         ## Compute losses
         value_loss, reward_loss, policy_loss = (0, 0, 0)
