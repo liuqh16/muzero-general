@@ -8,7 +8,6 @@ import torch
 import models
 
 
-@ray.remote
 class ReplayBuffer:
     """
     Class which run in a dedicated thread to store played games and generate batch.
@@ -31,7 +30,7 @@ class ReplayBuffer:
         # Fix random generator seed
         numpy.random.seed(self.config.seed)
 
-    def save_game(self, game_history, shared_storage=None):
+    def save_game(self, game_history):
         if self.config.PER:
             if game_history.priorities is not None:
                 # Avoid read only array when loading replay buffer from disk
@@ -61,10 +60,6 @@ class ReplayBuffer:
             self.total_samples -= len(self.buffer[del_id].root_values)
             del self.buffer[del_id]
 
-        if shared_storage:
-            shared_storage.set_info.remote("num_played_games", self.num_played_games)
-            shared_storage.set_info.remote("num_played_steps", self.num_played_steps)
-
     def get_buffer(self):
         return self.buffer
 
@@ -77,7 +72,7 @@ class ReplayBuffer:
             value_batch,
             policy_batch,
             gradient_scale_batch,
-        ) = ([], [], [], [], [], [], [], [])
+        ) = ([], [], [], [], [], [], [])
         updater_batch = [] if self.num_agents > 1 else None
         weight_batch = [] if self.config.PER else None
 
@@ -312,69 +307,3 @@ class ReplayBuffer:
                 )
 
         return target_values, target_rewards, target_policies, actions, updater_idxs
-
-
-@ray.remote
-class Reanalyse:
-    """
-    Class which run in a dedicated thread to update the replay buffer with fresh information.
-    See paper appendix Reanalyse.
-    """
-
-    def __init__(self, initial_checkpoint, config):
-        self.config = config
-
-        # Fix random generator seed
-        numpy.random.seed(self.config.seed)
-        torch.manual_seed(self.config.seed)
-
-        # Initialize the network
-        self.model = models.MuZeroNetwork(self.config)
-        self.model.set_weights(initial_checkpoint["weights"])
-        self.model.to(torch.device("cuda" if self.config.reanalyse_on_gpu else "cpu"))
-        self.model.eval()
-
-        self.num_reanalysed_games = initial_checkpoint["num_reanalysed_games"]
-
-    def reanalyse(self, replay_buffer, shared_storage):
-        while ray.get(shared_storage.get_info.remote("num_played_games")) < 1:
-            time.sleep(0.1)
-
-        while ray.get(
-            shared_storage.get_info.remote("training_step")
-        ) < self.config.training_steps and not ray.get(
-            shared_storage.get_info.remote("terminate")
-        ):
-            self.model.set_weights(ray.get(shared_storage.get_info.remote("weights")))
-
-            game_id, game_history, _ = ray.get(
-                replay_buffer.sample_game.remote(force_uniform=True)
-            )
-
-            # Use the last model to provide a fresher, stable n-step value (See paper appendix Reanalyze)
-            if self.config.use_last_model_value:
-                observations = [
-                    game_history.get_stacked_observations(
-                        i, self.config.stacked_observations
-                    )
-                    for i in range(len(game_history.root_values))
-                ]
-
-                observations = (
-                    torch.tensor(numpy.array(observations))
-                    .float()
-                    .to(next(self.model.parameters()).device)
-                )
-                values = models.support_to_scalar(
-                    self.model.initial_inference(observations)[0],
-                    self.config.support_size,
-                )
-                game_history.reanalysed_predicted_root_values = (
-                    torch.squeeze(values).detach().cpu().numpy()
-                )
-
-            replay_buffer.update_game_history.remote(game_id, game_history)
-            self.num_reanalysed_games += 1
-            shared_storage.set_info.remote(
-                "num_reanalysed_games", self.num_reanalysed_games
-            )

@@ -5,6 +5,8 @@ import os
 import pickle
 import sys
 import time
+import typing
+import warnings
 from glob import glob
 
 import nevergrad
@@ -13,12 +15,12 @@ import ray
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
-import diagnose_model
 import models
-import replay_buffer
-import self_play
-import shared_storage
-import trainer
+import parallel
+import diagnose_model
+
+
+warnings.filterwarnings("ignore")
 
 
 class MuZero:
@@ -117,12 +119,13 @@ class MuZero:
         self.checkpoint["weights"], self.summary = copy.deepcopy(ray.get(cpu_weights))
 
         # Workers
-        self.self_play_workers = None
-        self.test_worker = None
-        self.training_worker = None
-        self.reanalyse_worker = None
-        self.replay_buffer_worker = None
-        self.shared_storage_worker = None
+        
+        self.self_play_workers = None   # type: typing.List[parallel.SelfPlayWorker]
+        self.test_worker = None         # type: parallel.SelfPlayWorker
+        self.training_worker = None     # type: parallel.TrainingWorker
+        self.reanalyse_worker = None    # type: parallel.ReanalyseWorker
+        self.replay_buffer_worker = None    # type: parallel.ReplayBufferWorker
+        self.shared_storage_worker = None   # type: parallel.SharedStorage
 
     def train(self, log_in_tensorboard=True):
         """
@@ -148,27 +151,27 @@ class MuZero:
             num_gpus_per_worker = 0
 
         # Initialize workers
-        self.training_worker = trainer.Trainer.options(
+        self.training_worker = parallel.TrainingWorker.options(
             num_cpus=0, num_gpus=num_gpus_per_worker if self.config.train_on_gpu else 0,
         ).remote(self.checkpoint, self.config)
 
-        self.shared_storage_worker = shared_storage.SharedStorage.remote(
+        self.shared_storage_worker = parallel.SharedStorage.remote(
             self.checkpoint, self.config,
         )
         self.shared_storage_worker.set_info.remote("terminate", False)
 
-        self.replay_buffer_worker = replay_buffer.ReplayBuffer.remote(
+        self.replay_buffer_worker = parallel.ReplayBufferWorker.remote(
             self.checkpoint, self.replay_buffer, self.config
         )
 
         if self.config.use_last_model_value:
-            self.reanalyse_worker = replay_buffer.Reanalyse.options(
+            self.reanalyse_worker = parallel.ReanalyseWorker.options(
                 num_cpus=0,
                 num_gpus=num_gpus_per_worker if self.config.reanalyse_on_gpu else 0,
             ).remote(self.checkpoint, self.config)
 
         self.self_play_workers = [
-            self_play.SelfPlay.options(
+            parallel.SelfPlayWorker.options(
                 num_cpus=0,
                 num_gpus=num_gpus_per_worker if self.config.selfplay_on_gpu else 0,
             ).remote(
@@ -202,7 +205,7 @@ class MuZero:
         Keep track of the training performance.
         """
         # Launch the test worker to get performance metrics
-        self.test_worker = self_play.SelfPlay.options(
+        self.test_worker = parallel.SelfPlayWorker.options(
             num_cpus=0, num_gpus=num_gpus,
         ).remote(
             self.checkpoint,
@@ -299,7 +302,11 @@ class MuZero:
                 writer.add_scalar("3.Loss/Reward_loss", info["reward_loss"], counter)
                 writer.add_scalar("3.Loss/Policy_loss", info["policy_loss"], counter)
                 print(
-                    f'Last test reward: {info["total_reward"]:.2f}. Training step: {info["training_step"]}/{self.config.training_steps}. Played games: {info["num_played_games"]}. Loss: {info["total_loss"]:.2f}',
+                    f'Last test reward: {info["total_reward"]:.2f}. '
+                    f'Training step: {info["training_step"]}/{self.config.training_steps}. '
+                    f'Played games: {info["num_played_games"]}. '
+                    f'Played steps: {info["num_played_steps"]}. '
+                    f'Loss: {info["total_loss"]:.2f}',
                     end="\r",
                 )
                 counter += 1
@@ -365,7 +372,7 @@ class MuZero:
         """
         opponent = opponent if opponent else self.config.opponent
         muzero_player = muzero_player if muzero_player else self.config.muzero_player
-        self_play_worker = self_play.SelfPlay.options(
+        self_play_worker = parallel.SelfPlayWorker.options(
             num_cpus=0, num_gpus=num_gpus,
         ).remote(self.checkpoint, self.Game, self.config, numpy.random.randint(10000))
         results = []

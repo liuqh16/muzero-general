@@ -1,14 +1,11 @@
 import copy
-import time
 
 import numpy
-import ray
 import torch
 
 import models
 
 
-@ray.remote
 class Trainer:
     """
     Class which run in a dedicated thread to train a neural network and save it
@@ -57,69 +54,6 @@ class Trainer:
             self.optimizer.load_state_dict(
                 copy.deepcopy(initial_checkpoint["optimizer_state"])
             )
-
-    def continuous_update_weights(self, replay_buffer, shared_storage):
-        # Wait for the replay buffer to be filled
-        while ray.get(shared_storage.get_info.remote("num_played_games")) < 1:
-            time.sleep(0.1)
-
-        next_batch = replay_buffer.get_batch.remote()
-        # Training loop
-        while self.training_step < self.config.training_steps and not ray.get(
-            shared_storage.get_info.remote("terminate")
-        ):
-            index_batch, batch = ray.get(next_batch)
-            next_batch = replay_buffer.get_batch.remote()
-            self.update_lr()
-            (
-                priorities,
-                total_loss,
-                value_loss,
-                reward_loss,
-                policy_loss,
-            ) = self.update_weights(batch)
-
-            if self.config.PER:
-                # Save new priorities in the replay buffer (See https://arxiv.org/abs/1803.00933)
-                replay_buffer.update_priorities.remote(priorities, index_batch)
-
-            # Save to the shared storage
-            if self.training_step % self.config.checkpoint_interval == 0:
-                shared_storage.set_info.remote(
-                    {
-                        "weights": copy.deepcopy(self.model.get_weights()),
-                        "optimizer_state": copy.deepcopy(
-                            models.dict_to_cpu(self.optimizer.state_dict())
-                        ),
-                    }
-                )
-                if self.config.save_model:
-                    shared_storage.save_checkpoint.remote()
-            shared_storage.set_info.remote(
-                {
-                    "training_step": self.training_step,
-                    "lr": self.optimizer.param_groups[0]["lr"],
-                    "total_loss": total_loss,
-                    "value_loss": value_loss,
-                    "reward_loss": reward_loss,
-                    "policy_loss": policy_loss,
-                }
-            )
-
-            # Managing the self-play / training ratio
-            if self.config.training_delay:
-                time.sleep(self.config.training_delay)
-            if self.config.ratio:
-                while (
-                    self.training_step
-                    / max(
-                        1, ray.get(shared_storage.get_info.remote("num_played_steps"))
-                    )
-                    > self.config.ratio
-                    and self.training_step < self.config.training_steps
-                    and not ray.get(shared_storage.get_info.remote("terminate"))
-                ):
-                    time.sleep(0.5)
 
     def update_weights(self, batch):
         """

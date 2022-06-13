@@ -33,12 +33,12 @@ class MuZeroConfig:
 
         # Evaluate
         self.muzero_player = 0  # Turn Muzero begins to play (0: MuZero plays first, 1: MuZero plays second)
-        self.opponent = None  # Hard coded agent that MuZero faces to assess his progress in multiplayer games. It doesn't influence training. None, "random" or "expert" if implemented in the Game class
+        self.opponent = "self"  # Hard coded agent that MuZero faces to assess his progress in multiplayer games. It doesn't influence training. None, "random" or "expert" if implemented in the Game class
 
 
 
         ### Self-Play
-        self.num_workers = 1  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.num_workers = 50  # Number of simultaneous threads/workers self-playing to feed the replay buffer
         self.selfplay_on_gpu = False
         self.max_moves = 2000  # Maximum number of moves if game is not finished before
         self.num_simulations = 50  # Number of future moves self-simulated
@@ -201,9 +201,9 @@ class GFootball:
                                                     number_of_left_players_agent_controls=2,
                                                     number_of_right_players_agent_controls=2,
                                                     render=False)
-        self.player = 1     # 1 -> left team; -1 -> right team
         self.N = 2          # N: num_agents in a team
         self.observation_size = 8 * self.N + 9  # 25
+        self.player = 1     # 1 -> left team; -1 -> right team
         self.state = None
         self.action = np.zeros(self.N * 2, dtype=np.int8)
         self.reward = np.zeros(self.N * 2)
@@ -213,8 +213,11 @@ class GFootball:
         return 0 if self.player == 1 else 1
 
     def reset(self):
-        self.state = self._env.reset()
         self.player = 1
+        self.state = self._env.reset()
+        self.action = np.zeros(self.N * 2, dtype=np.int8)
+        self.reward = np.zeros(self.N * 2)
+        self.done = False
         return self.get_observation()
 
     def step(self, action):
