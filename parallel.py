@@ -87,6 +87,7 @@ class ReplayBufferWorker(ReplayBuffer):
         if shared_storage:
             shared_storage.set_info.remote("num_played_games", self.num_played_games)
             shared_storage.set_info.remote("num_played_steps", self.num_played_steps)
+            shared_storage.set_info.remote("num_nonzero_games", self.num_nonzero_games)
 
 
 @ray.remote

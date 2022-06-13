@@ -1,11 +1,7 @@
 import copy
-import time
+import typing
 
 import numpy
-import ray
-import torch
-
-import models
 
 
 class ReplayBuffer:
@@ -16,9 +12,10 @@ class ReplayBuffer:
     def __init__(self, initial_checkpoint, initial_buffer, config):
         self.config = config
         self.num_agents = getattr(self.config, "num_agents", 1)
-        self.buffer = copy.deepcopy(initial_buffer)     # dict(int, GameHistory)
+        self.buffer = copy.deepcopy(initial_buffer)     # type: typing.Dict[int, typing.Any]
         self.num_played_games = initial_checkpoint["num_played_games"]
         self.num_played_steps = initial_checkpoint["num_played_steps"]
+        self.num_nonzero_games = sum([sum(game_history.reward_history) > 0 for game_history in self.buffer.values()])
         self.total_samples = sum(
             [len(game_history.root_values) for game_history in self.buffer.values()]
         )
@@ -52,12 +49,14 @@ class ReplayBuffer:
 
         self.buffer[self.num_played_games] = game_history
         self.num_played_games += 1
+        self.num_nonzero_games += sum(game_history.reward_history) > 0
         self.num_played_steps += len(game_history.root_values)
         self.total_samples += len(game_history.root_values)
 
         if self.config.replay_buffer_size < len(self.buffer):
             del_id = self.num_played_games - len(self.buffer)
             self.total_samples -= len(self.buffer[del_id].root_values)
+            self.num_nonzero_games -= sum(self.buffer[del_id].reward_history) > 0
             del self.buffer[del_id]
 
     def get_buffer(self):

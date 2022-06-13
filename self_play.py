@@ -87,7 +87,6 @@ class SelfPlay:
                             f"Root value for player {self.game.to_play()}: {root.value():.2f}"
                         )
                 else:
-                    raise NotImplementedError("Evaluation for multi-agent remains to be implemented!!")
                     action, root = self.select_opponent_action(
                         opponent, stacked_observations
                     )
@@ -139,7 +138,10 @@ class SelfPlay:
                 set(self.config.action_space)
             ), "Legal actions should be a subset of the action space."
 
-            return numpy.random.choice(self.game.legal_actions()), None
+            if self.num_agents == 1:
+                return numpy.random.choice(self.game.legal_actions()), None
+            else:
+                return numpy.random.choice(self.game.legal_actions(), self.num_agents).tolist(), None
         else:
             raise NotImplementedError(
                 'Wrong argument: "opponent" argument should be "self", "human", "expert" or "random"'

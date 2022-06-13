@@ -33,12 +33,12 @@ class MuZeroConfig:
 
         # Evaluate
         self.muzero_player = 0  # Turn Muzero begins to play (0: MuZero plays first, 1: MuZero plays second)
-        self.opponent = "self"  # Hard coded agent that MuZero faces to assess his progress in multiplayer games. It doesn't influence training. None, "random" or "expert" if implemented in the Game class
+        self.opponent = "random"  # Hard coded agent that MuZero faces to assess his progress in multiplayer games. It doesn't influence training. None, "random" or "expert" if implemented in the Game class
 
 
 
         ### Self-Play
-        self.num_workers = 50  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.num_workers = 100  # Number of simultaneous threads/workers self-playing to feed the replay buffer
         self.selfplay_on_gpu = False
         self.max_moves = 2000  # Maximum number of moves if game is not finished before
         self.num_simulations = 50  # Number of future moves self-simulated
@@ -60,12 +60,12 @@ class MuZeroConfig:
         self.support_size = 10  # Value and reward are scaled (with almost sqrt) and encoded on a vector with a range of -support_size to support_size. Choose it so that support_size <= sqrt(max(abs(discounted reward)))
 
         # Fully Connected Network
-        self.encoding_size = 20
-        self.fc_representation_layers = [16, 16]  # Define the hidden layers in the representation network
-        self.fc_dynamics_layers = [16]  # Define the hidden layers in the dynamics network
-        self.fc_reward_layers = [16]  # Define the hidden layers in the reward network
-        self.fc_value_layers = [16]  # Define the hidden layers in the value network
-        self.fc_policy_layers = [16]  # Define the hidden layers in the policy network
+        self.encoding_size = 64
+        self.fc_representation_layers = [128, 64, 64]  # Define the hidden layers in the representation network
+        self.fc_dynamics_layers = [64, 64]  # Define the hidden layers in the dynamics network
+        self.fc_reward_layers = [32, 32]  # Define the hidden layers in the reward network
+        self.fc_value_layers = [32, 32]  # Define the hidden layers in the value network
+        self.fc_policy_layers = [32, 32]  # Define the hidden layers in the policy network
 
 
 
@@ -73,8 +73,8 @@ class MuZeroConfig:
         self.results_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../results", os.path.basename(__file__)[:-3], datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S"))  # Path to store the model weights and TensorBoard logs
         self.save_model = True  # Save the checkpoint in results_path as model.checkpoint
         self.training_steps = int(1000e3)  # Total number of training steps (ie weights update according to a batch)
-        self.batch_size = 1024  # Number of parts of games to train on at each training step
-        self.checkpoint_interval = int(1e3)  # Number of training steps before using the model for self-playing
+        self.batch_size = 512  # Number of parts of games to train on at each training step
+        self.checkpoint_interval = 100  # Number of training steps before using the model for self-playing
         self.value_loss_weight = 0.25  # Scale the value loss to avoid overfitting of the value function, paper recommends 0.25 (See paper appendix Reanalyze)
         self.train_on_gpu = torch.cuda.is_available()  # Train on GPU if available
         # print("GPU use:", torch.cuda.is_available())
@@ -182,7 +182,7 @@ class Game(AbstractGame):
         Display the game observation.
         """
         self.env._env.render()
-        input("Press enter to take a step ")
+        # input("Press enter to take a step ")
 
     def close(self):
         """

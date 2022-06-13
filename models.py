@@ -254,6 +254,10 @@ class MAMuZeroFullyConnectedNetwork(AbstractNetwork):
                 encoding_size,
             )
         )
+        self.dynamics_residual_output_network = torch.nn.DataParallel(
+            torch.nn.ReLU(inplace=True)
+        )
+
         self.dynamics_reward_network = torch.nn.DataParallel(
             mlp(encoding_size, fc_reward_layers, self.full_support_size)
         )
@@ -304,6 +308,8 @@ class MAMuZeroFullyConnectedNetwork(AbstractNetwork):
         x = torch.cat((encoded_state, action_one_hot), dim=1)
 
         next_encoded_state = self.dynamics_encoded_state_network(x)
+        next_encoded_state += encoded_state
+        next_encoded_state = self.dynamics_residual_output_network(next_encoded_state)
 
         reward = self.dynamics_reward_network(next_encoded_state)
 
@@ -777,7 +783,7 @@ def mlp(
     layer_sizes,
     output_size,
     output_activation=torch.nn.Identity,
-    activation=torch.nn.ELU,
+    activation=torch.nn.ReLU,
 ):
     sizes = [input_size] + layer_sizes + [output_size]
     layers = []

@@ -109,6 +109,7 @@ class MuZero:
             "policy_loss": 0,
             "num_played_games": 0,
             "num_played_steps": 0,
+            "num_nonzero_games": 0,
             "num_reanalysed_games": 0,
             "terminate": False,
         }
@@ -119,7 +120,6 @@ class MuZero:
         self.checkpoint["weights"], self.summary = copy.deepcopy(ray.get(cpu_weights))
 
         # Workers
-        
         self.self_play_workers = None   # type: typing.List[parallel.SelfPlayWorker]
         self.test_worker = None         # type: parallel.SelfPlayWorker
         self.training_worker = None     # type: parallel.TrainingWorker
@@ -237,7 +237,6 @@ class MuZero:
             "Model summary", self.summary,
         )
         # Loop for updating the training performance
-        counter = 0
         keys = [
             "total_reward",
             "muzero_reward",
@@ -252,55 +251,56 @@ class MuZero:
             "policy_loss",
             "num_played_games",
             "num_played_steps",
+            "num_nonzero_games",
             "num_reanalysed_games",
         ]
         info = ray.get(self.shared_storage_worker.get_info.remote(keys))
         try:
             while info["training_step"] < self.config.training_steps:
                 info = ray.get(self.shared_storage_worker.get_info.remote(keys))
+                counter = info["training_step"]
                 writer.add_scalar(
-                    "1.Total_reward/1.Total_reward", info["total_reward"], counter,
+                    "1.Evaluation/1.Total_reward", info["total_reward"], counter,
                 )
                 writer.add_scalar(
-                    "1.Total_reward/2.Mean_value", info["mean_value"], counter,
+                    "1.Evaluation/2.Mean_value", info["mean_value"], counter,
                 )
                 writer.add_scalar(
-                    "1.Total_reward/3.Episode_length", info["episode_length"], counter,
+                    "1.Evaluation/3.Episode_length", info["episode_length"], counter,
                 )
                 writer.add_scalar(
-                    "1.Total_reward/4.MuZero_reward", info["muzero_reward"], counter,
+                    "1.Evaluation/4.MuZero_reward", info["muzero_reward"], counter,
                 )
                 writer.add_scalar(
-                    "1.Total_reward/5.Opponent_reward",
-                    info["opponent_reward"],
-                    counter,
+                    "1.Evaluation/5.Opponent_reward", info["opponent_reward"], counter,
                 )
                 writer.add_scalar(
-                    "2.Workers/1.Self_played_games", info["num_played_games"], counter,
+                    "2.Selfplay/1.Self_played_steps", info["num_played_steps"], counter
                 )
                 writer.add_scalar(
-                    "2.Workers/2.Training_steps", info["training_step"], counter
+                    "2.Selfplay/2.Self_played_games", info["num_played_games"], counter,
                 )
                 writer.add_scalar(
-                    "2.Workers/3.Self_played_steps", info["num_played_steps"], counter
+                    "2.Selfplay/3.Reanalysed_games", info["num_reanalysed_games"], counter,
                 )
                 writer.add_scalar(
-                    "2.Workers/4.Reanalysed_games",
-                    info["num_reanalysed_games"],
-                    counter,
+                    "2.Selfplay/4.Self_played_steps_per_training_step_ratio",
+                    info["num_played_steps"] / max(1, info["training_step"]), counter,
                 )
                 writer.add_scalar(
-                    "2.Workers/5.Training_steps_per_self_played_step_ratio",
-                    info["training_step"] / max(1, info["num_played_steps"]),
-                    counter,
+                    "2.Selfplay/5.Nonzero_games", info["num_nonzero_games"], counter,
                 )
-                writer.add_scalar("2.Workers/6.Learning_rate", info["lr"], counter)
                 writer.add_scalar(
-                    "3.Loss/1.Total_weighted_loss", info["total_loss"], counter
+                    "2.Selfplay/6.Nonzero_games_ratio", (
+                        info["num_nonzero_games"]
+                        / numpy.clip(info["num_played_games"], 1, self.config.replay_buffer_size)
+                    ), counter,
                 )
-                writer.add_scalar("3.Loss/Value_loss", info["value_loss"], counter)
-                writer.add_scalar("3.Loss/Reward_loss", info["reward_loss"], counter)
-                writer.add_scalar("3.Loss/Policy_loss", info["policy_loss"], counter)
+                writer.add_scalar("3.Training/1.Total_weighted_loss", info["total_loss"], counter)
+                writer.add_scalar("3.Training/2.Value_loss", info["value_loss"], counter)
+                writer.add_scalar("3.Training/3.Reward_loss", info["reward_loss"], counter)
+                writer.add_scalar("3.Training/4.Policy_loss", info["policy_loss"], counter)
+                writer.add_scalar("3.Training/5.Learning_rate", info["lr"], counter)
                 print(
                     f'Last test reward: {info["total_reward"]:.2f}. '
                     f'Training step: {info["training_step"]}/{self.config.training_steps}. '
@@ -309,7 +309,6 @@ class MuZero:
                     f'Loss: {info["total_loss"]:.2f}',
                     end="\r",
                 )
-                counter += 1
                 time.sleep(0.5)
         except KeyboardInterrupt:
             pass
