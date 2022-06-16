@@ -94,23 +94,30 @@ class MuZero:
 
         # Checkpoint and replay buffer used to initialize workers
         self.checkpoint = {
+            # Model init
             "weights": None,
             "optimizer_state": None,
+            # Evaluation init
+            "eval_at_training_step": 0,
+            "episode_length": 0,
             "total_reward": 0,
+            "mean_value": 0,
             "muzero_reward": 0,
             "opponent_reward": 0,
-            "episode_length": 0,
-            "mean_value": 0,
+            # Training init
             "training_step": 0,
             "lr": 0,
             "total_loss": 0,
             "value_loss": 0,
             "reward_loss": 0,
             "policy_loss": 0,
+            # Buffer init
             "num_played_games": 0,
             "num_played_steps": 0,
-            "num_nonzero_games": 0,
+            "num_positive_games": 0,
+            "num_negative_games": 0,
             "num_reanalysed_games": 0,
+            # Controller init
             "terminate": False,
         }
         self.replay_buffer = {}
@@ -238,42 +245,52 @@ class MuZero:
         )
         # Loop for updating the training performance
         keys = [
+            # Evaluation info
+            "eval_at_training_step",
+            "episode_length",
             "total_reward",
+            "mean_value",
             "muzero_reward",
             "opponent_reward",
-            "episode_length",
-            "mean_value",
+            # Training info
             "training_step",
             "lr",
             "total_loss",
             "value_loss",
             "reward_loss",
             "policy_loss",
+            # Buffer info
             "num_played_games",
             "num_played_steps",
-            "num_nonzero_games",
+            "num_positive_games",
+            "num_negative_games",
             "num_reanalysed_games",
         ]
         info = ray.get(self.shared_storage_worker.get_info.remote(keys))
+        start_time = time.time()
         try:
             while info["training_step"] < self.config.training_steps:
                 info = ray.get(self.shared_storage_worker.get_info.remote(keys))
                 counter = info["training_step"]
+                eval_counter = info["eval_at_training_step"]
+                # Evaluation logging
                 writer.add_scalar(
-                    "1.Evaluation/1.Total_reward", info["total_reward"], counter,
+                    "1.Evaluation/1.Total_reward", info["total_reward"], eval_counter,
                 )
                 writer.add_scalar(
-                    "1.Evaluation/2.Mean_value", info["mean_value"], counter,
+                    "1.Evaluation/2.Mean_value", info["mean_value"], eval_counter,
                 )
                 writer.add_scalar(
-                    "1.Evaluation/3.Episode_length", info["episode_length"], counter,
+                    "1.Evaluation/3.Episode_length", info["episode_length"], eval_counter,
                 )
-                writer.add_scalar(
-                    "1.Evaluation/4.MuZero_reward", info["muzero_reward"], counter,
-                )
-                writer.add_scalar(
-                    "1.Evaluation/5.Opponent_reward", info["opponent_reward"], counter,
-                )
+                if 1 < len(self.config.players):
+                    writer.add_scalar(
+                        "1.Evaluation/4.MuZero_reward", info["muzero_reward"], eval_counter,
+                    )
+                    writer.add_scalar(
+                        "1.Evaluation/5.Opponent_reward", info["opponent_reward"], eval_counter,
+                    )
+                # Buffer logging
                 writer.add_scalar(
                     "2.Selfplay/1.Self_played_steps", info["num_played_steps"], counter
                 )
@@ -288,19 +305,30 @@ class MuZero:
                     info["num_played_steps"] / max(1, info["training_step"]), counter,
                 )
                 writer.add_scalar(
-                    "2.Selfplay/5.Nonzero_games", info["num_nonzero_games"], counter,
+                    "2.Selfplay/5.Positive_games", info["num_positive_games"], counter,
                 )
                 writer.add_scalar(
-                    "2.Selfplay/6.Nonzero_games_ratio", (
-                        info["num_nonzero_games"]
-                        / numpy.clip(info["num_played_games"], 1, self.config.replay_buffer_size)
-                    ), counter,
+                    "2.Selfplay/6.Positive_games_ratio",
+                    info["num_positive_games"] / max(1, info["num_played_games"]), counter,
                 )
+                writer.add_scalar(
+                    "2.Selfplay/7.Negative_games", info["num_negative_games"], counter,
+                )
+                writer.add_scalar(
+                    "2.Selfplay/8.Negative_games_ratio",
+                    info["num_negative_games"] / max(1, info["num_played_games"]), counter,
+                )
+                # Training logging
                 writer.add_scalar("3.Training/1.Total_weighted_loss", info["total_loss"], counter)
                 writer.add_scalar("3.Training/2.Value_loss", info["value_loss"], counter)
                 writer.add_scalar("3.Training/3.Reward_loss", info["reward_loss"], counter)
                 writer.add_scalar("3.Training/4.Policy_loss", info["policy_loss"], counter)
                 writer.add_scalar("3.Training/5.Learning_rate", info["lr"], counter)
+                writer.add_scalar(
+                    "3.Training/6.Time_elapsed_per_step",
+                    (time.time() - start_time) / max(1, counter), counter,
+                )
+                # Terminal output
                 print(
                     f'Last test reward: {info["total_reward"]:.2f}. '
                     f'Training step: {info["training_step"]}/{self.config.training_steps}. '

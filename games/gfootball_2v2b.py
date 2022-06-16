@@ -28,8 +28,9 @@ class MuZeroConfig:
         self.num_agents = 2
         self.observation_shape = (1, 1, 25)  # Dimensions of the game observation, must be 3D (channel, height, width). For a 1D array, please reshape it to (1, 1, length of array)
         self.action_space = list(range(19))  # Fixed list of all possible actions. You should only edit the length
-        self.players = list(range(2))  # List of players. You should only edit the length
+        self.players = list(range(1))  # List of players. You should only edit the length
         self.stacked_observations = 8  # Number of previous observations and previous actions to add to the current observation
+        self.final_reward_cover = True
 
         # Evaluate
         self.muzero_player = 0  # Turn Muzero begins to play (0: MuZero plays first, 1: MuZero plays second)
@@ -38,9 +39,9 @@ class MuZeroConfig:
 
 
         ### Self-Play
-        self.num_workers = 100  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.num_workers = 50  # Number of simultaneous threads/workers self-playing to feed the replay buffer
         self.selfplay_on_gpu = False
-        self.max_moves = 2000  # Maximum number of moves if game is not finished before
+        self.max_moves = 1000  # Maximum number of moves if game is not finished before
         self.num_simulations = 50  # Number of future moves self-simulated
         self.discount = 0.997  # Chronological discount of the reward
         self.temperature_threshold = None  # Number of moves before dropping the temperature given by visit_softmax_temperature_fn to 0 (ie selecting the best action). If None, visit_softmax_temperature_fn is used every time
@@ -73,7 +74,7 @@ class MuZeroConfig:
         self.results_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../results", os.path.basename(__file__)[:-3], datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S"))  # Path to store the model weights and TensorBoard logs
         self.save_model = True  # Save the checkpoint in results_path as model.checkpoint
         self.training_steps = int(1000e3)  # Total number of training steps (ie weights update according to a batch)
-        self.batch_size = 512  # Number of parts of games to train on at each training step
+        self.batch_size = 1924  # Number of parts of games to train on at each training step
         self.checkpoint_interval = 100  # Number of training steps before using the model for self-playing
         self.value_loss_weight = 0.25  # Scale the value loss to avoid overfitting of the value function, paper recommends 0.25 (See paper appendix Reanalyze)
         self.train_on_gpu = torch.cuda.is_available()  # Train on GPU if available
@@ -91,7 +92,7 @@ class MuZeroConfig:
 
 
         ### Replay Buffer
-        self.replay_buffer_size = int(1e6)  # Number of self-play games to keep in the replay buffer
+        self.replay_buffer_size = int(1e5)  # Number of self-play games to keep in the replay buffer
         self.num_unroll_steps = 5  # Number of game moves to keep for every batch element
         self.td_steps = 10  # Number of steps in the future to take into account for calculating the target value
         self.PER = True  # Prioritized Replay (See paper appendix Training), select in priority the elements in the replay buffer which are unexpected for the network
@@ -199,43 +200,26 @@ class GFootball:
                                                     write_goal_dumps=False,
                                                     write_full_episode_dumps=False,
                                                     number_of_left_players_agent_controls=2,
-                                                    number_of_right_players_agent_controls=2,
+                                                    number_of_right_players_agent_controls=0,
                                                     render=False)
         self.N = 2          # N: num_agents in a team
         self.observation_size = 8 * self.N + 9  # 25
-        self.player = 1     # 1 -> left team; -1 -> right team
         self.state = None
-        self.action = np.zeros(self.N * 2, dtype=np.int8)
-        self.reward = np.zeros(self.N * 2)
-        self.done = False
 
     def to_play(self):
-        return 0 if self.player == 1 else 1
+        return 0
 
     def reset(self):
-        self.player = 1
         self.state = self._env.reset()
-        self.action = np.zeros(self.N * 2, dtype=np.int8)
-        self.reward = np.zeros(self.N * 2)
-        self.done = False
         return self.get_observation()
 
     def step(self, action):
-        if self.player == 1:
-            self.action[:self.N] = np.array(action).astype(np.int8)
+        self.state, _, done, _ = self._env.step(action)
+
+        if not done:
+            reward = 0
         else:
-            self.action[self.N:] = np.array(action).astype(np.int8)
-            if not self.done:
-                self.state, self.reward, self.done, _ = self._env.step(self.action)
-
-        done = self.done and (
-            np.all(self.reward == 0)    # no score
-            or self.have_winner()       # have score
-        )
-
-        reward = 1 if self.have_winner() else 0
-
-        self.player *= -1
+            reward = self.state[0]['score'][0] - self.state[0]['score'][1]
 
         return self.get_observation(), reward, done
 
@@ -243,10 +227,7 @@ class GFootball:
         """
         Use raw data to generate observation: same for all players
         """
-        if self.player == 1:
-            global_state = self.state[0]  # use player[0]'s raw observation as global state
-        else:
-            global_state = self.state[self.N]  # use player[N]'s raw observation as global state
+        global_state = self.state[0]  # use player[0]'s raw observation as global state
         observation = np.zeros(self.observation_size)
         offset = 0
         # 2N: (x,y) coordinates of left team players
@@ -276,15 +257,6 @@ class GFootball:
 
     def legal_actions(self):
         return list(range(19))
-
-    def have_winner(self):
-        if (
-            self.state[0]['score'][0] == 1 and self.player == 1         # left team score
-            or self.state[0]['score'][1] == 1 and self.player == -1     # right team score
-        ):
-            return True
-        else:
-            return False
 
     def seed(self, seed):
         self._env.seed(seed)

@@ -55,39 +55,13 @@ class ReplayBufferWorker(ReplayBuffer):
         game_history: GameHistory,
         shared_storage: SharedStorage = None
     ):
-        if self.config.PER:
-            if game_history.priorities is not None:
-                # Avoid read only array when loading replay buffer from disk
-                game_history.priorities = numpy.copy(game_history.priorities)
-            else:
-                # Initial priorities for the prioritized replay (See paper appendix Training)
-                priorities = []
-                for i, root_value in enumerate(game_history.root_values):
-                    priority = (
-                        numpy.abs(
-                            root_value - self.compute_target_value(game_history, i)
-                        )
-                        ** self.config.PER_alpha
-                    )
-                    priorities.append(priority)
-
-                game_history.priorities = numpy.array(priorities, dtype="float32")
-                game_history.game_priority = numpy.max(game_history.priorities)
-
-        self.buffer[self.num_played_games] = game_history
-        self.num_played_games += 1
-        self.num_played_steps += len(game_history.root_values)
-        self.total_samples += len(game_history.root_values)
-
-        if self.config.replay_buffer_size < len(self.buffer):
-            del_id = self.num_played_games - len(self.buffer)
-            self.total_samples -= len(self.buffer[del_id].root_values)
-            del self.buffer[del_id]
+        super().save_game(game_history)
 
         if shared_storage:
             shared_storage.set_info.remote("num_played_games", self.num_played_games)
             shared_storage.set_info.remote("num_played_steps", self.num_played_steps)
-            shared_storage.set_info.remote("num_nonzero_games", self.num_nonzero_games)
+            shared_storage.set_info.remote("num_positive_games", self.num_positive_games)
+            shared_storage.set_info.remote("num_negative_games", self.num_negative_games)
 
 
 @ray.remote
@@ -123,6 +97,7 @@ class SelfPlayWorker(SelfPlay):
 
             else:
                 # Take the best action (no exploration) in test mode
+                eval_at_training_step = ray.get(shared_storage.get_info.remote("training_step"))
                 game_history = self.play_game(
                     0,
                     self.config.temperature_threshold,
@@ -134,8 +109,13 @@ class SelfPlayWorker(SelfPlay):
                 # Save to the shared storage
                 shared_storage.set_info.remote(
                     {
+                        "eval_at_training_step": eval_at_training_step,
                         "episode_length": len(game_history.action_history) - 1,
-                        "total_reward": sum(game_history.reward_history),
+                        "total_reward": (
+                            sum(game_history.reward_history)
+                            if not self.config.final_reward_cover else
+                            sum(game_history.reward_history) / (len(game_history.action_history) - 1)
+                        ),
                         "mean_value": numpy.mean(
                             [value for value in game_history.root_values if value]
                         ),
@@ -286,26 +266,25 @@ class ReanalyseWorker:
             )
 
             # Use the last model to provide a fresher, stable n-step value (See paper appendix Reanalyze)
-            if self.config.use_last_model_value:
-                observations = [
-                    game_history.get_stacked_observations(
-                        i, self.config.stacked_observations
-                    )
-                    for i in range(len(game_history.root_values))
-                ]
+            observations = [
+                game_history.get_stacked_observations(
+                    i, self.config.stacked_observations
+                )
+                for i in range(len(game_history.root_values))
+            ]
 
-                observations = (
-                    torch.tensor(numpy.array(observations))
-                    .float()
-                    .to(next(self.model.parameters()).device)
-                )
-                values = models.support_to_scalar(
-                    self.model.initial_inference(observations)[0],
-                    self.config.support_size,
-                )
-                game_history.reanalysed_predicted_root_values = (
-                    torch.squeeze(values).detach().cpu().numpy()
-                )
+            observations = (
+                torch.tensor(numpy.array(observations))
+                .float()
+                .to(next(self.model.parameters()).device)
+            )
+            values = models.support_to_scalar(
+                self.model.initial_inference(observations)[0],
+                self.config.support_size,
+            )
+            game_history.reanalysed_predicted_root_values = (
+                torch.squeeze(values).detach().cpu().numpy()
+            )
 
             replay_buffer.update_game_history.remote(game_id, game_history)
             self.num_reanalysed_games += 1

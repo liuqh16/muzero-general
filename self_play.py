@@ -16,6 +16,7 @@ class SelfPlay:
         self.config = config
         self.game = Game(seed)
         self.num_agents = getattr(self.config, "num_agents", 1)
+        self.final_reward_cover = getattr(self.config, "final_reward_cover", False)
 
         # Fix random generator seed
         numpy.random.seed(seed)
@@ -104,6 +105,10 @@ class SelfPlay:
                 game_history.observation_history.append(observation)
                 game_history.reward_history.append(reward)
                 game_history.to_play_history.append(self.game.to_play())
+
+        if done and self.final_reward_cover:
+            for i in range(1, len(game_history.reward_history)):
+                game_history.reward_history[i] = game_history.reward_history[-1]
 
         return game_history
 
@@ -465,17 +470,20 @@ class GameHistory:
         self.action_history = []
         """`(a_0, a_1, ..., a_T)`, size=T+1, where `a_0` is a initial default action (0)"""
 
-        self.reward_history = []
+        self.reward_history = []    # target_rewards
         """`(r_0, r_1, ..., r_T)`, size=T+1, where `r_0` is a initial default reward (0)"""
 
         self.to_play_history = []
         """`(P_1, P_2, ..., P_{T+1})`, size=T+1, where `P_t` means player to act before step `t`"""
 
-        self.child_visits = []      # sum to 1.0 for each element
+        self.child_visits = []      # target_policy
         """`(pi_1, pi_2, ..., pi_T)` MCTS policy for each state from `o_1` to `o_T`, size=T"""
 
         self.root_values = []
         """`(v_1, v_2, ..., v_T)`, MCTS predicte value for `o_1` to `o_T`, size=T"""
+
+        self.target_values = []
+        """`(z_1, z_2, ..., z_T)`, n-step return via bootstrapping."""
 
         self.reanalysed_predicted_root_values = None
         # For PER
