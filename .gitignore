@@ -96,3 +96,8 @@ dmypy.json
 # models
 *.checkpoint
 results/
+
+# commitizen
+node_modules
+package.json
+package-lock.json

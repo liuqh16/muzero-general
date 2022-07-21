@@ -114,7 +114,7 @@ class SelfPlayWorker(SelfPlay):
                         "total_reward": (
                             sum(game_history.reward_history)
                             if not self.config.final_reward_cover else
-                            sum(game_history.reward_history) / (len(game_history.action_history) - 1)
+                            game_history.reward_history[-1]
                         ),
                         "mean_value": numpy.mean(
                             [value for value in game_history.root_values if value]
@@ -122,20 +122,19 @@ class SelfPlayWorker(SelfPlay):
                     }
                 )
                 if 1 < len(self.config.players):
+                    reward_func = numpy.mean if self.final_reward_cover else sum
                     shared_storage.set_info.remote(
                         {
-                            "muzero_reward": sum(
+                            "muzero_reward": reward_func([
                                 reward
                                 for i, reward in enumerate(game_history.reward_history)
-                                if game_history.to_play_history[i - 1]
-                                == self.config.muzero_player
-                            ),
-                            "opponent_reward": sum(
+                                if game_history.to_play_history[i - 1] == self.config.muzero_player
+                            ]),
+                            "opponent_reward": reward_func([
                                 reward
                                 for i, reward in enumerate(game_history.reward_history)
-                                if game_history.to_play_history[i - 1]
-                                != self.config.muzero_player
-                            ),
+                                if game_history.to_play_history[i - 1] != self.config.muzero_player
+                            ]),
                         }
                     )
 

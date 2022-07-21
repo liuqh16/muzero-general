@@ -1,3 +1,5 @@
+# Insights
+
 1. 单智能体 -> 多智能体
     - MCTS进行rollout的改动：需要保存policy，因为每次固定一个智能体使用ucb进行search，其他智能体使用保存的policy进行sample
     - Env实际step的改动：原本直接使用MCTS得到的根节点policy进行greedy sample，现在和rollout的时候一样，也需要固定智能体，其他智能体使用网络policy直接sample
@@ -9,4 +11,11 @@
     - 网络结构修改：embeding层
     - gumbel
     - 检测不同动作的熵，将类似的动作合并
+
+
+探索 -> 模型一致性 -> 大动作空间 -> 随机性model
+
+
+
+# 2022-06-15
 

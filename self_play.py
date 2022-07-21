@@ -107,9 +107,14 @@ class SelfPlay:
                 game_history.to_play_history.append(self.game.to_play())
 
         if done and self.final_reward_cover:
-            for i in range(1, len(game_history.reward_history)):
-                game_history.reward_history[i] = game_history.reward_history[-1]
-
+            if self.num_agents == 1:
+                for i in range(1, len(game_history.reward_history)):
+                    game_history.reward_history[i] = game_history.reward_history[-1]
+            else:
+                winner_player = game_history.to_play_history[-2]
+                for i in range(1, len(game_history.reward_history)):
+                    if game_history.to_play_history[i - 1] == winner_player:
+                        game_history.reward_history[i] = game_history.reward_history[-1]
         return game_history
 
     def close_game(self):
