@@ -121,6 +121,9 @@ class SelfPlayWorker(SelfPlay):
                         ),
                     }
                 )
+                # Env specific log
+                shared_storage.set_info.remote(game_history.terminated_info)
+
                 if 1 < len(self.config.players):
                     reward_func = numpy.mean if self.final_reward_cover else sum
                     shared_storage.set_info.remote(

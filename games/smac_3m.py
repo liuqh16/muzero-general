@@ -31,7 +31,7 @@ class MuZeroConfig:
         self.action_space = list(range(9))   # Fixed list of all possible actions for single agent. You should only edit the length
         self.players = list(range(1))  # List of players. You should only edit the length
         self.stacked_observations = 8  # Number of previous observations and previous actions to add to the current observation
-        self.final_reward_cover = True
+        self.final_reward_cover = False
 
         # Evaluate
         self.muzero_player = 0  # Turn Muzero begins to play (0: MuZero plays first, 1: MuZero plays second)
@@ -40,10 +40,10 @@ class MuZeroConfig:
 
 
         ### Self-Play
-        self.num_workers = 1  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.num_workers = 100  # Number of simultaneous threads/workers self-playing to feed the replay buffer
         self.selfplay_on_gpu = False
-        self.max_moves = 2000  # Maximum number of moves if game is not finished before
-        self.num_simulations = 50  # Number of future moves self-simulated
+        self.max_moves = 1000  # Maximum number of moves if game is not finished before
+        self.num_simulations = 100  # Number of future moves self-simulated
         self.discount = 0.997  # Chronological discount of the reward
         self.temperature_threshold = None  # Number of moves before dropping the temperature given by visit_softmax_temperature_fn to 0 (ie selecting the best action). If None, visit_softmax_temperature_fn is used every time
 
@@ -137,6 +137,7 @@ class Game(AbstractGame):
         env_info = self.env.get_env_info()
         self.n_agents = env_info["n_agents"]    # 3
         self.n_actions = env_info["n_actions"]  # 14
+        self.info = {}
 
     def reset(self) -> np.ndarray:
         """
@@ -146,6 +147,7 @@ class Game(AbstractGame):
             Initial observation of the game.
         """
         self.env.reset()
+        self.info = {}
         state = np.expand_dims(self.env.get_state(), axis=(0, 1))  # (1, 1, 48)
         return state
 
@@ -157,9 +159,12 @@ class Game(AbstractGame):
         Returns:
             The new observation, the reward and a boolean if the game has ended.
         """
-        reward, terminated, info = self.env.step(action)
+        reward, terminated, self.info = self.env.step(action)
         state = np.expand_dims(self.env.get_state(), axis=(0, 1))  # (1, 1, 48)
         return state, reward, terminated
+
+    def terminate_info(self):
+        return self.info
 
     def to_play(self) -> int:
         """

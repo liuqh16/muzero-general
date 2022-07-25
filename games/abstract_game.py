@@ -103,3 +103,12 @@ class AbstractGame(ABC):
             String representing the action.
         """
         return str(action_number)
+
+    def terminate_info(self):
+        """
+        Specific information when game terminated, including 'win or lose'.
+
+        Returns:
+            Information Dict
+        """
+        return {}

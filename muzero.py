@@ -121,6 +121,13 @@ class MuZero:
             # Controller init
             "terminate": False,
         }
+        # SMAC info
+        if 'smac' in self.Game.__module__:
+            self.checkpoint.update({
+                "battle_won": False,
+                "num_dead_allies": 3,
+                "num_dead_enemies": 0,
+            })
         self.replay_buffer = {}
 
         cpu_actor = CPUActor.remote()
@@ -222,7 +229,7 @@ class MuZero:
             self.config.seed + self.config.num_workers,
         )
         self.test_worker.continuous_self_play.remote(
-            self.shared_storage_worker, None, True
+            self.shared_storage_worker, None, test_mode=True
         )
 
         # Write everything in TensorBoard
@@ -267,6 +274,13 @@ class MuZero:
             "num_negative_games",
             "num_reanalysed_games",
         ]
+        # SMAC info
+        if 'smac' in self.Game.__module__:
+            keys += [
+                "battle_won",
+                "num_dead_allies",
+                "num_dead_enemies",
+            ]
         info = ray.get(self.shared_storage_worker.get_info.remote(keys))
         start_time = time.time()
         try:
@@ -329,6 +343,11 @@ class MuZero:
                     "3.Training/6.Time_elapsed_per_step",
                     (time.time() - start_time) / max(1, counter), counter,
                 )
+                # Env-specific logging
+                if 'smac' in self.Game.__module__:
+                    writer.add_scalar("4.SMAC/1.battle_won", info["battle_won"], eval_counter)
+                    writer.add_scalar("4.SMAC/2.num_dead_allies", info["num_dead_allies"], eval_counter)
+                    writer.add_scalar("4.SMAC/3.num_dead_enemies", info["num_dead_enemies"], eval_counter)
                 # Terminal output
                 print(
                     f'Last test reward: {info["total_reward"]:.2f}. '

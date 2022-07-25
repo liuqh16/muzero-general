@@ -112,6 +112,7 @@ class SelfPlay:
                 game_history.reward_history.append(reward)
                 game_history.to_play_history.append(self.game.to_play())
 
+        # TODO: wrong!!!!!
         if done and self.final_reward_cover:
             if self.num_agents == 1:
                 for i in range(1, len(game_history.reward_history)):
@@ -121,6 +122,9 @@ class SelfPlay:
                 for i in range(1, len(game_history.reward_history)):
                     if game_history.to_play_history[i - 1] == winner_player:
                         game_history.reward_history[i] = game_history.reward_history[-1]
+
+        game_history.terminated_info.update(self.game.terminate_info())
+
         return game_history
 
     def close_game(self):
@@ -551,6 +555,8 @@ class GameHistory:
 
         self.game_priority = None
         """max(self.priorities)"""
+
+        self.terminated_info = {}
 
     def store_search_statistics(self, root: Node, action_space):
         # Turn visit count from root into a policy
