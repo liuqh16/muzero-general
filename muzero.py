@@ -682,7 +682,7 @@ if __name__ == "__main__":
         elif choice == 2:
             muzero.diagnose_model(30)
         elif choice == 3:
-            muzero.test(render=True, opponent="self", muzero_player=None)
+            muzero.test(render=True, opponent="self", muzero_player=None, num_tests=50)
         elif choice == 4:
             muzero.test(render=True, opponent="human", muzero_player=0)
         elif choice == 5:

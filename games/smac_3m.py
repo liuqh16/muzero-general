@@ -1,5 +1,6 @@
-import datetime
 import os
+import datetime
+from typing import List, Tuple
 
 import gym
 import numpy
@@ -7,7 +8,7 @@ import torch
 import numpy as np
 
 from .abstract_game import AbstractGame
-import gfootball.env as football_env
+from smac.env import StarCraft2Env
 
 try:
     import cv2
@@ -25,21 +26,21 @@ class MuZeroConfig:
 
 
         ### Game
-        self.num_agents = 2
-        self.observation_shape = (1, 1, 25)  # Dimensions of the game observation, must be 3D (channel, height, width). For a 1D array, please reshape it to (1, 1, length of array)
-        self.action_space = list(range(19))  # Fixed list of all possible actions. You should only edit the length
-        self.players = list(range(2))  # List of players. You should only edit the length
+        self.num_agents = 3
+        self.observation_shape = (1, 1, 48)  # Dimensions of the game observation, must be 3D (channel, height, width). For a 1D array, please reshape it to (1, 1, length of array)
+        self.action_space = list(range(9))   # Fixed list of all possible actions for single agent. You should only edit the length
+        self.players = list(range(1))  # List of players. You should only edit the length
         self.stacked_observations = 8  # Number of previous observations and previous actions to add to the current observation
         self.final_reward_cover = True
 
         # Evaluate
         self.muzero_player = 0  # Turn Muzero begins to play (0: MuZero plays first, 1: MuZero plays second)
-        self.opponent = "random"  # Hard coded agent that MuZero faces to assess his progress in multiplayer games. It doesn't influence training. None, "random" or "expert" if implemented in the Game class
+        self.opponent = None  # Hard coded agent that MuZero faces to assess his progress in multiplayer games. It doesn't influence training. None, "random" or "expert" if implemented in the Game class
 
 
 
         ### Self-Play
-        self.num_workers = 50  # Number of simultaneous threads/workers self-playing to feed the replay buffer
+        self.num_workers = 1  # Number of simultaneous threads/workers self-playing to feed the replay buffer
         self.selfplay_on_gpu = False
         self.max_moves = 2000  # Maximum number of moves if game is not finished before
         self.num_simulations = 50  # Number of future moves self-simulated
@@ -132,11 +133,23 @@ class Game(AbstractGame):
     """
 
     def __init__(self, seed=None):
-        self.env = GFootball()
-        if seed is not None:
-            self.env.seed(seed)
+        self.env = StarCraft2Env(map_name="3m", seed=seed)
+        env_info = self.env.get_env_info()
+        self.n_agents = env_info["n_agents"]    # 3
+        self.n_actions = env_info["n_actions"]  # 14
 
-    def step(self, action):
+    def reset(self) -> np.ndarray:
+        """
+        Reset the game for a new game.
+
+        Returns:
+            Initial observation of the game.
+        """
+        self.env.reset()
+        state = np.expand_dims(self.env.get_state(), axis=(0, 1))  # (1, 1, 48)
+        return state
+
+    def step(self, action) -> Tuple[np.ndarray, float, bool]:
         """
         Args:
             action : action of the action_space to take.
@@ -144,150 +157,43 @@ class Game(AbstractGame):
         Returns:
             The new observation, the reward and a boolean if the game has ended.
         """
-        observation, reward, done = self.env.step(action)
-        return observation, reward * 20, done
+        reward, terminated, info = self.env.step(action)
+        state = np.expand_dims(self.env.get_state(), axis=(0, 1))  # (1, 1, 48)
+        return state, reward, terminated
 
-    def to_play(self):
+    def to_play(self) -> int:
         """
-        Return the current player.
+        Return the current player. (element of MuZeroConfig.players)
 
         Returns:
             The current player, it should be an element of the players list in the config. 
         """
-        return self.env.to_play()
+        return 0
 
-    def legal_actions(self):
+    def legal_actions(self) -> List[List[int]]:
         """
         Should return the legal actions at each turn, if it is not available, it can return
         the whole action space. At each turn, the game have to be able to handle one of returned actions.
 
-        For complex game where calculating legal moves is too long, the idea is to define the legal actions
-        equal to the action space but to return a negative reward if the action is illegal.
-
         Returns:
-            An array of integers, subset of the action space.
+            for Multi-Agent settings, return a list of legal action arrays w.r.t. each agent
         """
-        return self.env.legal_actions()
-
-    def reset(self):
-        """
-        Reset the game for a new game.
-
-        Returns:
-            Initial observation of the game.
-        """
-        return self.env.reset()
+        legal_actions = []  # type: List[List[int]]
+        for agent_id in range(self.n_agents):
+            avail_actions = self.env.get_avail_agent_actions(agent_id)
+            avail_actions_ind = np.nonzero(avail_actions)[0].tolist()   # type: List[int]
+            legal_actions.append(avail_actions_ind)
+        return legal_actions
 
     def render(self):
         """
         Display the game observation.
         """
-        self.env._env.render()
+        self.env.render()
         # input("Press enter to take a step ")
 
     def close(self):
         """
         Properly close the game.
         """
-        self.env._env.close()
-
-
-class GFootball:
-    def __init__(self):
-        self._env = football_env.create_environment(env_name="2_vs_2",
-                                                    stacked=False,
-                                                    representation='raw',
-                                                    write_goal_dumps=True,
-                                                    write_full_episode_dumps=True,
-                                                    write_video=True,
-                                                    logdir='gfootball_2v2/render',
-                                                    number_of_left_players_agent_controls=2,
-                                                    number_of_right_players_agent_controls=2,
-                                                    render=True)
-        self.N = 2          # N: num_agents in a team
-        self.observation_size = 8 * self.N + 9  # 25
-        self.player = 1     # 1 -> left team; -1 -> right team
-        self.state = None
-        self.action = np.zeros(self.N * 2, dtype=np.int8)
-        self.reward = np.zeros(self.N * 2)
-        self.done = False
-
-    def to_play(self):
-        return 0 if self.player == 1 else 1
-
-    def reset(self):
-        self.player = 1
-        self.state = self._env.reset()
-        self.action = np.zeros(self.N * 2, dtype=np.int8)
-        self.reward = np.zeros(self.N * 2)
-        self.done = False
-        return self.get_observation()
-
-    def step(self, action):
-        if self.player == 1:
-            self.action[:self.N] = np.array(action).astype(np.int8)
-        else:
-            self.action[self.N:] = np.array(action).astype(np.int8)
-            if not self.done:
-                self.state, self.reward, self.done, _ = self._env.step(self.action)
-
-        done = self.done and (
-            np.all(self.reward == 0)    # no score
-            or self.have_winner()       # have score
-        )
-
-        reward = 1 if self.have_winner() else 0
-
-        self.player *= -1
-
-        return self.get_observation(), reward, done
-
-    def get_observation(self):
-        """
-        Use raw data to generate observation: same for all players
-        """
-        if self.player == 1:
-            global_state = self.state[0]  # use player[0]'s raw observation as global state
-        else:
-            global_state = self.state[self.N]  # use player[N]'s raw observation as global state
-        observation = np.zeros(self.observation_size)
-        offset = 0
-        # 2N: (x,y) coordinates of left team players
-        observation[offset:offset + 2 * self.N] = global_state['left_team'].reshape(-1, )
-        offset += 2 * self.N
-        # 2N: (x,y) direction of left team players
-        observation[offset:offset + 2 * self.N] = global_state['left_team_direction'].reshape(-1, )
-        offset += 2 * self.N
-        # 2N: (x,y) coordinates of right team players
-        observation[offset:offset + 2 * self.N] = global_state['right_team'].reshape(-1, )
-        offset += 2 * self.N
-        # 2N: (x,y) direction of right team players
-        observation[offset:offset + 2 * self.N] = global_state['right_team_direction'].reshape(-1, )
-        offset += 2 * self.N
-        # 3: (x, y, z) position of ball
-        observation[offset:offset + 3] = global_state['ball'].reshape(-1, )
-        offset += 3
-        # 3: (x, y, z) direction of ball
-        observation[offset:offset + 3] = global_state['ball_direction'].reshape(-1, )
-        offset += 3
-        # 3: one hot encoding of ball ownership (noone, left, right)
-        observation[offset:offset + 3] = np.eye(3)[(global_state['ball_owned_team'] + 1)]
-        offset += 3
-
-        observation = np.expand_dims(observation, axis=(0, 1))
-        return observation
-
-    def legal_actions(self):
-        return list(range(19))
-
-    def have_winner(self):
-        if (
-            self.state[0]['score'][0] == 1 and self.player == 1         # left team score
-            or self.state[0]['score'][1] == 1 and self.player == -1     # right team score
-        ):
-            return True
-        else:
-            return False
-
-    def seed(self, seed):
-        self._env.seed(seed)
+        self.env.close()

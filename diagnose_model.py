@@ -25,6 +25,8 @@ class DiagnoseModel:
         self.model.set_weights(checkpoint["weights"])
         self.model.eval()
 
+        raise NotImplementedError
+
     def get_virtual_trajectory_from_obs(
         self, observation, horizon, plot=True, to_play=0
     ):

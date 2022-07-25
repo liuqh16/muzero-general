@@ -270,8 +270,8 @@ class ReplayBuffer:
                 target_policies.append(game_history.child_visits[current_index])    # (K+1, action_space_size)
                 actions.append(game_history.action_history[current_index])          # (K+1, num_agents)
                 updater_idxs.append(
-                    game_history.updater_idx[game_history.to_play_history[current_index]]  # (K+1,)
-                    if game_history.updater_idx is not None else None
+                    game_history.updaters_idx[game_history.to_play_history[current_index]]  # (K+1,)
+                    if game_history.updaters_idx is not None else None
                 )
             elif current_index == len(game_history.root_values):
                 target_values.append(0)
@@ -285,8 +285,8 @@ class ReplayBuffer:
                 )
                 actions.append(game_history.action_history[current_index])
                 updater_idxs.append(
-                    game_history.updater_idx[game_history.to_play_history[current_index]]
-                    if game_history.updater_idx is not None else None
+                    game_history.updaters_idx[game_history.to_play_history[current_index]]
+                    if game_history.updaters_idx is not None else None
                 )
             else:
                 # States past the end of games are treated as absorbing states
@@ -303,7 +303,7 @@ class ReplayBuffer:
                 # Uniform choose updater
                 updater_idxs.append(
                     numpy.random.choice(self.num_agents)
-                    if game_history.updater_idx is not None else None
+                    if game_history.updaters_idx is not None else None
                 )
 
         return target_values, target_rewards, target_policies, actions, updater_idxs

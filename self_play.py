@@ -1,5 +1,5 @@
 import math
-import typing
+from typing import Union, List, Dict
 
 import numpy
 import torch
@@ -14,7 +14,10 @@ class SelfPlay:
 
     def __init__(self, initial_checkpoint, Game, config, seed):
         self.config = config
-        self.game = Game(seed)
+        from games.smac_3m import Game as SMACGame
+        self.game = Game(seed)      # type: SMACGame
+
+        self.num_players = len(getattr(self.config, "players", [0]))
         self.num_agents = getattr(self.config, "num_agents", 1)
         self.final_reward_cover = getattr(self.config, "final_reward_cover", False)
 
@@ -36,12 +39,13 @@ class SelfPlay:
         """
         game_history = GameHistory(num_agents=self.num_agents)
         observation = self.game.reset()
-        game_history.action_history.append([0] * self.num_agents)
-        game_history.observation_history.append(observation)
-        game_history.reward_history.append(0)
-        game_history.to_play_history.append(self.game.to_play())
+        game_history.action_history.append([0] * self.num_agents)   # a_0
+        game_history.observation_history.append(observation)        # o_1
+        game_history.reward_history.append(0)                       # r_0
+        game_history.to_play_history.append(self.game.to_play())    # P_1
         if self.num_agents > 1:
-            game_history.updater_idx = numpy.random.choice(self.num_agents, 2)
+            # Choose the fixed agent index as updater
+            game_history.updaters_idx = numpy.random.choice(self.num_agents, self.num_players).tolist()
 
         done = False
 
@@ -52,12 +56,14 @@ class SelfPlay:
             while (
                 not done and len(game_history.action_history) <= self.config.max_moves
             ):
+                # Observation data check
                 assert (
                     len(numpy.array(observation).shape) == 3
                 ), f"Observation should be 3 dimensionnal instead of {len(numpy.array(observation).shape)} dimensionnal. Got observation of shape: {numpy.array(observation).shape}"
                 assert (
                     numpy.array(observation).shape == self.config.observation_shape
                 ), f"Observation should match the observation_shape defined in MuZeroConfig. Expected {self.config.observation_shape} but got {numpy.array(observation).shape}."
+
                 stacked_observations = game_history.get_stacked_observations(
                     -1,
                     self.config.stacked_observations,
@@ -66,19 +72,19 @@ class SelfPlay:
                 # Choose the action
                 if opponent == "self" or muzero_player == self.game.to_play():
                     root, mcts_info = MCTS(self.config).run(
-                        self.model,
-                        stacked_observations,
-                        self.game.legal_actions(),
-                        self.game.to_play(),
-                        True,
-                        updater_idx=game_history.updater_idx
+                        model=self.model,
+                        observation=stacked_observations,
+                        legal_actions=self.game.legal_actions(),
+                        to_play=self.game.to_play(),
+                        add_exploration_noise=True,
+                        updaters_idx=game_history.updaters_idx
                     )
                     action = self.select_action(
-                        root,
-                        temperature
-                        if not temperature_threshold
-                        or len(game_history.action_history) < temperature_threshold
-                        else 0,
+                        node=root,
+                        temperature=temperature if (
+                            not temperature_threshold
+                            or len(game_history.action_history) < temperature_threshold
+                        ) else 0,
                         num_agents=self.num_agents
                     )
 
@@ -158,7 +164,7 @@ class SelfPlay:
             )
 
     @staticmethod
-    def select_action(node, temperature, num_agents=1) -> typing.Union[int, typing.List[int]]:
+    def select_action(node, temperature, num_agents=1) -> Union[int, List[int]]:
         """
         Select action according to the visit count distribution and the temperature.
         The temperature is changed dynamically with the visit_softmax_temperature function
@@ -181,19 +187,89 @@ class SelfPlay:
             )
             action = numpy.random.choice(actions, p=visit_count_distribution)
 
-        # [MA-action] Append non-chosen agents' action
+        # [Multi-Agent] Append non-updater agents' action
         if num_agents > 1:
             action = [
                 (
-                    action if agent_idx == node.updater_idx
-                    else numpy.random.choice(actions, 1, p=node.all_policy_probs[agent_idx]).item()
-                ) for agent_idx in range(num_agents)
+                    action if agent_id == node.updater_idx
+                    else numpy.random.choice(node.all_legal_actions[agent_id], 1, p=node.all_policy_probs[agent_id]).item()
+                ) for agent_id in range(num_agents)
             ]
 
         return action
 
 
 # Game independent
+class Node:
+    def __init__(self, prior):
+        self.visit_count = 0
+        self.to_play = -1
+        self.prior = prior      # type: float
+        self.value_sum = 0
+        self.children = {}      # type: Dict[int, Node]
+        self.hidden_state = None        # type: torch.Tensor
+        self.updater_idx = None         # type: int
+        self.all_policy_probs = None    # type: numpy.ndarray
+        self.reward = 0
+
+    def expanded(self):
+        return len(self.children) > 0
+
+    def value(self):
+        if self.visit_count == 0:
+            return 0
+        return self.value_sum / self.visit_count
+
+    def expand(
+        self,
+        legal_actions: List[int],
+        policy_logits: torch.Tensor,    # (num_actions,)
+        to_play: int,
+        reward: float,
+        hidden_state: torch.Tensor,     # (1, encoding_size)
+        # [Multi-Agent] Parameters
+        updater_idx: int = None,
+        all_legal_actions: List[List[int]] = None,
+        all_policy_logits: torch.Tensor = None  # (num_agents, num_actions)
+    ):
+        """
+        We expand a node using the value, reward and policy prediction obtained from the
+        neural network.
+        """
+        self.to_play = to_play
+        self.reward = reward
+        self.hidden_state = hidden_state
+
+        policy_probs = torch.softmax(
+            torch.tensor([policy_logits[a] for a in legal_actions]), dim=0
+        ).tolist()
+        for i, action in enumerate(legal_actions):
+            self.children[action] = Node(policy_probs[i])
+
+        if updater_idx is not None:
+            self.updater_idx = updater_idx
+
+        if all_policy_logits is not None:
+            self.all_legal_actions = all_legal_actions
+            self.all_policy_probs = {}
+            for agent_id in range(len(all_legal_actions)):
+                policy_probs = torch.softmax(
+                    torch.tensor([all_policy_logits[agent_id, a] for a in all_legal_actions[agent_id]]), dim=0
+                ).tolist()
+                self.all_policy_probs[agent_id] = policy_probs / numpy.sum(policy_probs)
+
+    def add_exploration_noise(self, dirichlet_alpha, exploration_fraction):
+        """
+        At the start of each search, we add dirichlet noise to the prior of the root to
+        encourage the search to explore new actions.
+        """
+        actions = list(self.children.keys())
+        noise = numpy.random.dirichlet([dirichlet_alpha] * len(actions))
+        frac = exploration_fraction
+        for a, n in zip(actions, noise):
+            self.children[a].prior = self.children[a].prior * (1 - frac) + n * frac
+
+
 class MCTS:
     """
     Core Monte Carlo Tree Search algorithm.
@@ -208,12 +284,12 @@ class MCTS:
     def run(
         self,
         model: models.AbstractNetwork,
-        observation,
-        legal_actions,
-        to_play,
-        add_exploration_noise,
-        override_root_with=None,
-        updater_idx=None
+        observation: numpy.ndarray,
+        legal_actions: Union[List[int], List[List[int]]],
+        to_play: int,
+        add_exploration_noise: bool,
+        override_root_with: Node = None,
+        updaters_idx: List[int] = None
     ):
         """
         At the root of the search tree we use the representation function to obtain a
@@ -235,29 +311,47 @@ class MCTS:
             (
                 root_predicted_value,
                 reward,
-                policy_logits,
-                hidden_state,
+                policy_logits,          # (1, num_actions) | (1, num_agents, num_actions)
+                hidden_state,           # (1, encoding_size)
             ) = model.initial_inference(observation)
             root_predicted_value = models.support_to_scalar(
                 root_predicted_value, self.config.support_size
             ).item()
             reward = models.support_to_scalar(reward, self.config.support_size).item()
 
-            assert (
-                legal_actions
-            ), f"Legal actions should not be an empty array. Got {legal_actions}."
-            assert set(legal_actions).issubset(
-                set(self.config.action_space)
-            ), "Legal actions should be a subset of the action space."
-
-            root.expand(
-                legal_actions,
-                to_play,
-                reward,
-                policy_logits,
-                hidden_state,
-                updater_idx=updater_idx
-            )
+            if updaters_idx is None:
+                assert (
+                    legal_actions
+                ), f"Legal actions should not be an empty array. Got {legal_actions}."
+                assert set(legal_actions).issubset(
+                    set(self.config.action_space)
+                ), "Legal actions should be a subset of the action space."
+                root.expand(
+                    legal_actions,      # agent's legal actions: List[int]
+                    policy_logits[0],   # agent's policy: (num_actions,)
+                    to_play,
+                    reward,
+                    hidden_state,
+                )
+            else:
+                for agent_id, legal_action in enumerate(legal_actions):
+                    assert (
+                        legal_action
+                    ), f"Legal actions for agent {agent_id} should not be an empty array. Got {legal_action}."
+                    assert set(legal_action).issubset(
+                        set(self.config.action_space)
+                    ), f"Legal actions for agent {agent_id} should be a subset of the action space."
+                # [Multi-Agent] node expand
+                root.expand(
+                    legal_actions[updaters_idx[to_play]],       # agent's legal actions: List[int]
+                    policy_logits[0, updaters_idx[to_play]],    # updater's policy: (num_actions,)
+                    to_play,
+                    reward,
+                    hidden_state,
+                    updater_idx=updaters_idx[to_play],
+                    all_legal_actions=legal_actions,            # all agents' legal actions: List[List[int]]
+                    all_policy_logits=policy_logits[0],         # all agents' policy: (num_agents, num_actions)
+                )
 
         if add_exploration_noise:
             root.add_exploration_noise(
@@ -266,9 +360,10 @@ class MCTS:
             )
 
         min_max_stats = MinMaxStats()
-
         max_tree_depth = 0
+
         for _ in range(self.config.num_simulations):
+
             virtual_to_play = to_play
             node = root
             search_path = [node]
@@ -289,34 +384,46 @@ class MCTS:
             # state given an action and the previous hidden state
             parent = search_path[-2]  # parent of the leaf node
 
-            # [MA-action] random choose an action for non-chosen agent
+            # [Multi-Agent] random choose an action for non-updater agent
             if parent.updater_idx is not None:
                 action = [[
                     (
-                        action if agent_idx == parent.updater_idx
-                        else numpy.random.choice(legal_actions, 1, p=parent.all_policy_probs[agent_idx]).item()
-                    ) for agent_idx in range(self.config.num_agents)
+                        action if agent_id == parent.updater_idx
+                        else numpy.random.choice(parent.all_legal_actions[agent_id], 1, p=parent.all_policy_probs[agent_id]).item()
+                    ) for agent_id in range(self.config.num_agents)
                 ]]
             else:
                 action = [[action]]
 
-            value, reward, policy_logits, hidden_state = model.recurrent_inference(
+            virtual_value, virtual_reward, virtual_policy_logits, virtual_hidden_state = model.recurrent_inference(
                 parent.hidden_state,
                 torch.tensor(action).to(parent.hidden_state.device)
             )
-            value = models.support_to_scalar(value, self.config.support_size).item()
-            reward = models.support_to_scalar(reward, self.config.support_size).item()
+            virtual_value = models.support_to_scalar(virtual_value, self.config.support_size).item()
+            virtual_reward = models.support_to_scalar(virtual_reward, self.config.support_size).item()
 
-            node.expand(
-                self.config.action_space,
-                virtual_to_play,
-                reward,
-                policy_logits,
-                hidden_state,
-                updater_idx=updater_idx
-            )
+            if updaters_idx is None:
+                node.expand(
+                    self.config.action_space,       # virtual legal action space = full action space
+                    virtual_policy_logits[0],
+                    virtual_to_play,
+                    virtual_reward,
+                    virtual_hidden_state,
+                )
+            # [Multi-Agent] node expand
+            else:
+                node.expand(
+                    self.config.action_space,       # virtual legal action space = full action space
+                    virtual_policy_logits[0, updaters_idx[virtual_to_play]],
+                    virtual_to_play,
+                    virtual_reward,
+                    virtual_hidden_state,
+                    updater_idx=updaters_idx[virtual_to_play],
+                    all_legal_actions=[self.config.action_space for _ in range(self.config.num_agents)],
+                    all_policy_logits=virtual_policy_logits[0]
+                )
 
-            self.backpropagate(search_path, value, virtual_to_play, min_max_stats)
+            self.backpropagate(search_path, virtual_value, virtual_to_play, min_max_stats)
 
             max_tree_depth = max(max_tree_depth, current_tree_depth)
 
@@ -397,59 +504,6 @@ class MCTS:
             raise NotImplementedError("More than two player mode not implemented.")
 
 
-class Node:
-    def __init__(self, prior):
-        self.visit_count = 0
-        self.to_play = -1
-        self.prior = prior  # type: float
-        self.value_sum = 0
-        self.children = {}  # type: typing.Dict[int, Node]
-        self.hidden_state = None        # type: torch.Tensor
-        self.updater_idx = None         # type: int
-        self.all_policy_probs = None    # type: numpy.ndarray
-        self.reward = 0
-
-    def expanded(self):
-        return len(self.children) > 0
-
-    def value(self):
-        if self.visit_count == 0:
-            return 0
-        return self.value_sum / self.visit_count
-
-    def expand(self, actions, to_play, reward, policy_logits, hidden_state, updater_idx=None):
-        """
-        We expand a node using the value, reward and policy prediction obtained from the
-        neural network.
-        """
-        self.to_play = to_play
-        self.reward = reward
-        self.hidden_state = hidden_state
-        if updater_idx is not None:
-            self.updater_idx = updater_idx[to_play]
-            self.all_policy_probs = torch.softmax(policy_logits[0], dim=1).tolist()
-            self.all_policy_probs /= numpy.sum(self.all_policy_probs, axis=1, keepdims=True)
-            policy_logits = policy_logits[:, self.updater_idx]
-
-        policy_values = torch.softmax(
-            torch.tensor([policy_logits[0][a] for a in actions]), dim=0
-        ).tolist()
-        policy = {a: policy_values[i] for i, a in enumerate(actions)}
-        for action, p in policy.items():
-            self.children[action] = Node(p)
-
-    def add_exploration_noise(self, dirichlet_alpha, exploration_fraction):
-        """
-        At the start of each search, we add dirichlet noise to the prior of the root to
-        encourage the search to explore new actions.
-        """
-        actions = list(self.children.keys())
-        noise = numpy.random.dirichlet([dirichlet_alpha] * len(actions))
-        frac = exploration_fraction
-        for a, n in zip(actions, noise):
-            self.children[a].prior = self.children[a].prior * (1 - frac) + n * frac
-
-
 class GameHistory:
     """
     Store only usefull information of a self-play game.
@@ -466,8 +520,8 @@ class GameHistory:
 
     def __init__(self, num_agents=1):
         self.num_agents = num_agents
-        self.updater_idx = None
-        """agent's index of chosen policy for each side. shape=(2,)"""
+        self.updaters_idx = None
+        """agents' index of updater policy for each side. shape=(num_players,)"""
 
         self.observation_history = []
         """`(o_1, o_2, ..., o_{T+1})`, size=T+1, where `o_{T+1}` is a terminate state"""
